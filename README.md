@@ -36,6 +36,33 @@ JEV의 판단 지연을 실제 게임 시간 안에서 검증하기 위한 테�
 > 아니면 deterministic safety envelope 안에서만 판단하게 하는 것이  
 > 장기 생존성과 실제 제어 가능성을 높이는가?
 
+## v3: Selective JEV 실험
+
+v2 장기 run에서 시스템이 안정 상태에 들어가면서, JEV를 모든 블록에 호출할 필요가 있는지 검증하기 위한 버전입니다.
+
+환경변수:
+
+    JEV_POLICY=always
+    JEV_AMBIGUITY_GAP=10.0
+    JEV_HIGH_STACK_TRIGGER=8
+
+정책:
+
+- `always`: 모든 블록마다 JEV 호출
+- `ambiguous`: deterministic 후보가 애매하거나 복구/고위험 상태일 때만 JEV 호출
+- `off`: JEV를 호출하지 않고 safety envelope + 2-ply deterministic fallback만 사용
+
+`ambiguous` 모드에서는 다음 상황에서 JEV를 호출합니다.
+
+- 현재 holes > 0
+- 최고 높이가 `JEV_HIGH_STACK_TRIGGER` 이상
+- top-2 후보의 `two_ply_score` 차이가 `JEV_AMBIGUITY_GAP` 이하
+
+명확한 deterministic winner가 있으면 API 호출을 생략하고 즉시 실행합니다.
+
+공정한 A/B 비교를 위해 `TETRIS_RANDOM_SEED`를 고정한 뒤,
+같은 seed에서 `always / ambiguous / off` 세 모드를 비교하는 것을 권장합니다.
+
 ## 블록 randomizer
 
 기본값은 **IID random**입니다.
