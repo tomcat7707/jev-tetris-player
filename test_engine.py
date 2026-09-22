@@ -60,9 +60,53 @@ class TetrisEngineTests(unittest.TestCase):
             self.assertTrue(required.issubset(candidate))
             self.assertTrue(candidate["safety_filtered"])
 
-    def test_safety_envelope_rejects_avoidable_holes_from_logged_failure(self):
-        # 2026-09-22 run #2 piece 37 직전 보드.
-        # 기존 알고리즘은 O를 오른쪽에 놓아 holes 0 -> 3을 만들었다.
+    def test_diverse_pool_keeps_tradeoff_choices_from_logged_failure(self):
+        # v3 run piece 136 직전 보드.
+        # hard hole-filter는 두 번째 S에서 후보를 1개로 줄여 높은 세로벽을 강제했다.
+        game = TetrisGame(randomizer_mode="iid", seed=1)
+        game.board = board_from_strings([
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "...S.....T",
+            "...SS...TT",
+            "...TS...TT",
+            "..TTT..ZTT",
+            "..TTT.ZZTL",
+            ".TSTS.ZLLL",
+            ".TZSTSLSSJ",
+        ])
+
+        candidates = game.generate_candidate_moves("S", next_piece="O")
+        self.assertGreaterEqual(len(candidates), 3)
+        self.assertGreater(
+            game.last_candidate_diagnostics["raw_count"],
+            1,
+        )
+        self.assertEqual(
+            game.last_candidate_diagnostics["mode"],
+            "diverse_holistic",
+        )
+        self.assertTrue(all("robust_score" in c for c in candidates))
+        self.assertTrue(all("next_option_count" in c for c in candidates))
+        self.assertGreater(
+            len({c["col"] for c in candidates}),
+            1,
+        )
+
+    def test_pool_exposes_controlled_risk_instead_of_deleting_it(self):
+        # 과거 piece 37 보드에서도 zero-hole 후보와 controlled-risk 후보를 함께
+        # 비교할 수 있어야 한다.
         game = TetrisGame(randomizer_mode="iid", seed=1)
         game.board = board_from_strings([
             "..........",
@@ -88,9 +132,9 @@ class TetrisEngineTests(unittest.TestCase):
         ])
 
         candidates = game.generate_candidate_moves("O", next_piece="I")
-        self.assertGreater(len(candidates), 0)
-        self.assertEqual(game.count_holes(), 0)
-        self.assertTrue(all(c["total_holes_after"] == 0 for c in candidates))
+        holes = {c["total_holes_after"] for c in candidates}
+        self.assertIn(0, holes)
+        self.assertGreater(len(candidates), 1)
 
 
     def test_selective_gate_skips_clear_deterministic_winner(self):
