@@ -244,7 +244,12 @@ class TetrisGame:
                 score += 15.0
             return score
 
-        valid_pool.sort(key=score_move, reverse=True)
+        # 로그/사후분석에서 JEV 선택과 휴리스틱 순위를 직접 비교할 수 있게
+        # 각 후보에 계산된 점수를 보존한다.
+        for move in valid_pool:
+            move["heuristic_score"] = round(score_move(move), 3)
+
+        valid_pool.sort(key=lambda m: m["heuristic_score"], reverse=True)
         return valid_pool[:5]
 
     def lock_blocks_to_board(self, shape, col, drop_y, piece_name):
