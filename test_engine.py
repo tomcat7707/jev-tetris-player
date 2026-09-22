@@ -2,6 +2,7 @@ import unittest
 
 from tetris_engine import TetrisGame
 from path_planner import find_control_path
+from decision_gate import should_call_jev
 
 
 def board_from_strings(rows):
@@ -90,6 +91,59 @@ class TetrisEngineTests(unittest.TestCase):
         self.assertGreater(len(candidates), 0)
         self.assertEqual(game.count_holes(), 0)
         self.assertTrue(all(c["total_holes_after"] == 0 for c in candidates))
+
+
+    def test_selective_gate_skips_clear_deterministic_winner(self):
+        summary = {
+            "column_heights": [2, 2, 3, 3, 2, 2, 1, 1, 0, 0],
+            "current_holes": 0,
+        }
+        candidates = [
+            {"id": "a", "two_ply_score": -100.0, "heuristic_score": -80.0},
+            {"id": "b", "two_ply_score": -120.5, "heuristic_score": -90.0},
+        ]
+        call, info = should_call_jev(
+            "ambiguous",
+            summary,
+            candidates,
+            ambiguity_gap=10.0,
+            high_stack_trigger=8,
+        )
+        self.assertFalse(call)
+        self.assertEqual(info["reason"], "clear_deterministic_winner")
+
+    def test_selective_gate_calls_jev_on_ambiguous_or_risky_state(self):
+        clean_summary = {
+            "column_heights": [2, 2, 3, 3, 2, 2, 1, 1, 0, 0],
+            "current_holes": 0,
+        }
+        candidates = [
+            {"id": "a", "two_ply_score": -100.0, "heuristic_score": -80.0},
+            {"id": "b", "two_ply_score": -106.0, "heuristic_score": -82.0},
+        ]
+        call, info = should_call_jev(
+            "ambiguous",
+            clean_summary,
+            candidates,
+            ambiguity_gap=10.0,
+            high_stack_trigger=8,
+        )
+        self.assertTrue(call)
+        self.assertEqual(info["reason"], "ambiguous_gap")
+
+        recovery_summary = {
+            "column_heights": [3, 3, 4, 4, 3, 3, 2, 2, 1, 1],
+            "current_holes": 1,
+        }
+        call, info = should_call_jev(
+            "ambiguous",
+            recovery_summary,
+            candidates,
+            ambiguity_gap=10.0,
+            high_stack_trigger=8,
+        )
+        self.assertTrue(call)
+        self.assertEqual(info["reason"], "recovery_holes")
 
     def test_path_planner_finds_collision_aware_route(self):
         game = TetrisGame(randomizer_mode="iid", seed=1)

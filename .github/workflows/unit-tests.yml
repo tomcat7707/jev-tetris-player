@@ -17,6 +17,6 @@ jobs:
         with:
           python-version: "3.13"
       - name: Syntax check
-        run: python -m py_compile main.py tetris_engine.py jev_agent.py telemetry.py path_planner.py
+        run: python -m py_compile main.py tetris_engine.py jev_agent.py telemetry.py path_planner.py decision_gate.py
       - name: Run engine tests
         run: python -m unittest -v

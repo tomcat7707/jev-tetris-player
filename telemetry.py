@@ -73,6 +73,7 @@ class ExperimentLogger:
             "jev_requests": 0,
             "jev_responses": 0,
             "jev_applied": 0,
+            "jev_skipped": 0,
             "jev_late": 0,
             "jev_errors": 0,
             "jev_unreachable": 0,
