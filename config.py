@@ -28,3 +28,18 @@ TETRIS_RANDOM_SEED = int(_seed_raw) if _seed_raw else None
 # 블록은 JEV 응답을 기다리지 않고 즉시 낙하한다.
 # 이 시간 안에 JEV가 도착하지 않으면 휴리스틱 1위 후보로 계속 진행한다.
 JEV_DECISION_DEADLINE_MS = int(os.getenv("JEV_DECISION_DEADLINE_MS", "1600"))
+
+
+# JEV 호출 정책
+# - always: 모든 블록마다 JEV 호출
+# - ambiguous: deterministic 후보가 애매하거나 위험상태일 때만 JEV 호출
+# - off: JEV를 전혀 호출하지 않고 deterministic fallback만 사용
+JEV_POLICY = os.getenv("JEV_POLICY", "always").strip().lower()
+if JEV_POLICY not in {"always", "ambiguous", "off"}:
+    JEV_POLICY = "always"
+
+# ambiguous 모드에서 top-2 two-ply score 차이가 이 값 이하이면 JEV 호출
+JEV_AMBIGUITY_GAP = float(os.getenv("JEV_AMBIGUITY_GAP", "10.0"))
+
+# 이 높이 이상에서는 score gap과 무관하게 JEV를 호출해 위험상태를 재검토
+JEV_HIGH_STACK_TRIGGER = int(os.getenv("JEV_HIGH_STACK_TRIGGER", "8"))
