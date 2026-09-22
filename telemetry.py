@@ -29,11 +29,22 @@ def compact_candidate(move):
         "overhangs",
         "delta_holes",
         "total_holes_after",
+        "hole_depth",
+        "rows_with_holes",
+        "row_transitions",
         "col_transitions",
         "cumulative_wells",
+        "bumpiness",
         "lines_cleared",
+        "eroded_piece_cells",
         "max_height",
         "heuristic_score",
+        "next_best_score",
+        "next_best_holes",
+        "next_best_max_height",
+        "next_best_id",
+        "two_ply_score",
+        "safety_filtered",
     )
     return {key: move.get(key) for key in keys}
 
