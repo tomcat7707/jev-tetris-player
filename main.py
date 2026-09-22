@@ -22,6 +22,7 @@ from tetris_engine import TetrisGame, PIECE_COLORS, SHAPES, ORIENTATION_LABELS
 from jev_agent import JevTetrisAgent
 from telemetry import ExperimentLogger, compact_board, compact_candidate
 from path_planner import find_control_path, first_reachable_candidate
+from decision_gate import should_call_jev
 
 
 def draw_block(screen, x, y, color, border_color=(40, 40, 40), width=0):
@@ -82,58 +83,6 @@ def move_narrative(move):
     if lh <= 8:
         return f"{move['col']}번 열 후보 → 낮은 착지({lh}칸) 유지"
     return f"{move['col']}번 열 후보 → 협곡 억제 및 안정화"
-
-
-def should_call_jev(policy, summary, candidates):
-    """Deterministic layer가 확실하면 JEV를 건너뛰고, 애매한 상태만 호출한다."""
-    if policy == "always":
-        return True, {"reason": "policy_always"}
-    if policy == "off":
-        return False, {"reason": "policy_off"}
-
-    if not candidates:
-        return False, {"reason": "no_candidates"}
-
-    max_height = max(summary["column_heights"])
-    holes = summary["current_holes"]
-
-    if holes > 0:
-        return True, {
-            "reason": "recovery_holes",
-            "holes": holes,
-            "max_height": max_height,
-        }
-
-    if max_height >= JEV_HIGH_STACK_TRIGGER:
-        return True, {
-            "reason": "high_stack",
-            "holes": holes,
-            "max_height": max_height,
-        }
-
-    if len(candidates) < 2:
-        return False, {
-            "reason": "single_safe_candidate",
-            "holes": holes,
-            "max_height": max_height,
-        }
-
-    top = candidates[0]
-    second = candidates[1]
-    top_score = float(top.get("two_ply_score", top.get("heuristic_score", 0.0)))
-    second_score = float(second.get("two_ply_score", second.get("heuristic_score", 0.0)))
-    gap = top_score - second_score
-
-    call = gap <= JEV_AMBIGUITY_GAP
-    return call, {
-        "reason": "ambiguous_gap" if call else "clear_deterministic_winner",
-        "holes": holes,
-        "max_height": max_height,
-        "top_id": top.get("id"),
-        "second_id": second.get("id"),
-        "two_ply_gap": round(gap, 3),
-        "threshold": JEV_AMBIGUITY_GAP,
-    }
 
 
 def main():
@@ -556,6 +505,8 @@ def main():
                             JEV_POLICY,
                             active_summary,
                             active_candidates,
+                            JEV_AMBIGUITY_GAP,
+                            JEV_HIGH_STACK_TRIGGER,
                         )
                         if not jev_call:
                             decision_finalized = True
