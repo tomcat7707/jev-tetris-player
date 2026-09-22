@@ -158,15 +158,19 @@ class TetrisGame:
 
         cumulative_wells = 0
         for c in range(self.width):
-            for r in range(self.height):
+            r = 0
+            while r < self.height:
                 if board[r][c] is not None:
+                    r += 1
                     continue
 
                 left_filled = c == 0 or board[r][c - 1] is not None
                 right_filled = c == self.width - 1 or board[r][c + 1] is not None
                 if not (left_filled and right_filled):
+                    r += 1
                     continue
 
+                # 하나의 연속 well을 한 번만 계산한다.
                 depth = 0
                 rr = r
                 while rr < self.height and board[rr][c] is None:
@@ -177,8 +181,8 @@ class TetrisGame:
                     depth += 1
                     rr += 1
 
-                if depth:
-                    cumulative_wells += depth * (depth + 1) // 2
+                cumulative_wells += depth * (depth + 1) // 2
+                r = rr
 
         bumpiness = sum(abs(heights[i] - heights[i + 1]) for i in range(self.width - 1))
 
