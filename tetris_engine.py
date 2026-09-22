@@ -157,6 +157,7 @@ class TetrisGame:
                 col_transitions += 1
 
         cumulative_wells = 0
+        max_well_depth = 0
         for c in range(self.width):
             r = 0
             while r < self.height:
@@ -182,21 +183,28 @@ class TetrisGame:
                     rr += 1
 
                 cumulative_wells += depth * (depth + 1) // 2
+                max_well_depth = max(max_well_depth, depth)
                 r = rr
 
         bumpiness = sum(abs(heights[i] - heights[i + 1]) for i in range(self.width - 1))
+        max_cliff = max(
+            (abs(heights[i] - heights[i + 1]) for i in range(self.width - 1)),
+            default=0,
+        )
 
         return {
             "heights": heights,
             "aggregate_height": sum(heights),
             "max_height": max(heights) if heights else 0,
             "bumpiness": bumpiness,
+            "max_cliff": max_cliff,
             "holes": holes,
             "hole_depth": hole_depth,
             "rows_with_holes": len(rows_with_holes),
             "row_transitions": row_transitions,
             "col_transitions": col_transitions,
             "cumulative_wells": cumulative_wells,
+            "max_well_depth": max_well_depth,
         }
 
     def count_holes(self, board=None):
@@ -299,7 +307,9 @@ class TetrisGame:
             "row_transitions": metrics_after["row_transitions"],
             "col_transitions": metrics_after["col_transitions"],
             "cumulative_wells": metrics_after["cumulative_wells"],
+            "max_well_depth": metrics_after["max_well_depth"],
             "bumpiness": metrics_after["bumpiness"],
+            "max_cliff": metrics_after["max_cliff"],
             "aggregate_height": metrics_after["aggregate_height"],
             "lines_cleared": cleared,
             "eroded_piece_cells": eroded_piece_cells,
@@ -319,78 +329,133 @@ class TetrisGame:
                     raw.append(move)
         return raw
 
-    def _safety_pool(self, candidates, board):
+    def _ranked_diverse_pool(self, candidates, limit=8):
+        """
+        v4: hole=0을 절대 규칙으로 강제하지 않는다.
+
+        장기 생존에서는 '지금 hole 0'보다 깊은 canyon, 과도한 높이,
+        다음 블록 선택지 고갈이 더 위험할 수 있다. 따라서 holistic score를
+        기본으로 하되 서로 다른 장점을 가진 후보를 섞어 JEV에 선택권을 준다.
+        """
         if not candidates:
             return []
 
-        current_metrics = self.evaluate_board_metrics(board)
-        current_holes = current_metrics["holes"]
+        selected = []
+        seen = set()
 
-        non_worsening = [m for m in candidates if m["total_holes_after"] <= current_holes]
-        if non_worsening:
-            pool = non_worsening
+        def add(move):
+            if move is None:
+                return
+            if move["id"] not in seen and len(selected) < limit:
+                selected.append(move)
+                seen.add(move["id"])
 
-            # 상단이 매우 위험할 때에만, 높이를 크게 낮추는 2+ line clear에
-            # 한해 hole 1개 증가를 제한적으로 허용한다.
-            if current_metrics["max_height"] >= 15:
-                safest_height = min(m["max_height"] for m in non_worsening)
-                emergency_rescue = [
-                    m for m in candidates
-                    if m["delta_holes"] <= 1
-                    and m["lines_cleared"] >= 2
-                    and m["max_height"] <= safest_height - 2
-                ]
-                seen = {m["id"] for m in pool}
-                pool.extend(m for m in emergency_rescue if m["id"] not in seen)
-            return pool
+        # 1) 전체 2-ply 점수 상위 후보가 주력.
+        for move in sorted(
+            candidates,
+            key=lambda m: m.get("robust_score", m.get("two_ply_score", m["heuristic_score"])),
+            reverse=True,
+        )[: max(4, limit - 3)]:
+            add(move)
 
-        # 모든 수가 hole을 늘리는 상황이면 가장 적게 악화되는 수만 남긴다.
-        min_holes = min(m["total_holes_after"] for m in candidates)
-        return [m for m in candidates if m["total_holes_after"] == min_holes]
+        # 2) Pareto-like sentinels: 특정 안전 축에서 가장 좋은 후보를 보존.
+        add(min(candidates, key=lambda m: (m["total_holes_after"], m["hole_depth"], -m["lines_cleared"])))
+        add(min(candidates, key=lambda m: (m["max_well_depth"], m["cumulative_wells"], m["max_height"])))
+        add(min(candidates, key=lambda m: (m["max_height"], m["max_cliff"], m["bumpiness"])))
+        add(max(candidates, key=lambda m: (m.get("next_option_count", 0), m.get("next_nonworsening_count", 0))))
+
+        # 아직 자리가 남으면 holistic 순으로 채운다.
+        if len(selected) < limit:
+            for move in sorted(
+                candidates,
+                key=lambda m: m.get("robust_score", m.get("two_ply_score", m["heuristic_score"])),
+                reverse=True,
+            ):
+                add(move)
+                if len(selected) >= limit:
+                    break
+
+        selected.sort(
+            key=lambda m: m.get("robust_score", m.get("two_ply_score", m["heuristic_score"])),
+            reverse=True,
+        )
+        return selected
 
     def generate_candidate_moves(self, piece_name, next_piece=None, limit=8):
         raw_candidates = self._raw_candidates(piece_name, self.board)
         if not raw_candidates:
+            self.last_candidate_diagnostics = {
+                "raw_count": 0,
+                "returned_count": 0,
+                "mode": "diverse_holistic",
+            }
             return []
 
-        safe_pool = self._safety_pool(raw_candidates, self.board)
+        current_metrics = self.evaluate_board_metrics(self.board)
 
-        # 안전 envelope 안에서 다음 블록까지 한 수 더 내다본다.
-        for move in safe_pool:
-            move["safety_filtered"] = True
+        # v4는 모든 합법 후보를 유지한 상태에서 known NEXT를 한 수 더 본다.
+        for move in raw_candidates:
+            move["safety_filtered"] = False
+            move["candidate_pool_mode"] = "diverse_holistic"
             move["lookahead_piece"] = next_piece
             move["next_best_score"] = None
             move["next_best_holes"] = move["total_holes_after"]
             move["next_best_max_height"] = move["max_height"]
+            move["next_best_max_well_depth"] = move["max_well_depth"]
+            move["next_option_count"] = 0
+            move["next_nonworsening_count"] = 0
             move["two_ply_score"] = move["heuristic_score"]
 
             if next_piece:
                 next_raw = self._raw_candidates(next_piece, move["final_board"])
-                next_safe = self._safety_pool(next_raw, move["final_board"])
-
-                if next_safe:
-                    next_best = max(next_safe, key=lambda m: m["heuristic_score"])
+                move["next_option_count"] = len(next_raw)
+                if next_raw:
+                    move["next_nonworsening_count"] = sum(
+                        1
+                        for nxt in next_raw
+                        if nxt["total_holes_after"] <= move["total_holes_after"]
+                    )
+                    next_best = max(next_raw, key=lambda m: m["heuristic_score"])
                     move["next_best_score"] = next_best["heuristic_score"]
                     move["next_best_holes"] = next_best["total_holes_after"]
                     move["next_best_max_height"] = next_best["max_height"]
+                    move["next_best_max_well_depth"] = next_best["max_well_depth"]
                     move["next_best_id"] = next_best["id"]
                     move["two_ply_score"] = round(
                         move["heuristic_score"] + 0.35 * next_best["heuristic_score"],
                         3,
                     )
 
-        # 동일 safety envelope에서는 다음 블록 이후 holes가 적고,
-        # 2-ply 평가가 좋은 후보를 먼저 보여준다.
-        safe_pool.sort(
-            key=lambda m: (
-                m["total_holes_after"],
-                m["next_best_holes"],
-                -m["two_ply_score"],
-                m["max_height"],
-            )
-        )
+            # 유한한 risk penalty만 둔다. hole을 만든다는 이유로 후보 자체를 삭제하지 않는다.
+            new_holes = max(0, move["delta_holes"])
+            well_excess = max(0, move["max_well_depth"] - 4)
+            next_well_excess = max(0, move["next_best_max_well_depth"] - 5)
+            option_shortage = max(0, 4 - move["next_option_count"])
 
-        return safe_pool[:limit]
+            move["robust_score"] = round(
+                move["two_ply_score"]
+                - 12.0 * new_holes
+                - 7.0 * well_excess
+                - 4.0 * next_well_excess
+                - 6.0 * option_shortage,
+                3,
+            )
+
+        pool = self._ranked_diverse_pool(raw_candidates, limit=limit)
+
+        self.last_candidate_diagnostics = {
+            "mode": "diverse_holistic",
+            "raw_count": len(raw_candidates),
+            "returned_count": len(pool),
+            "current_holes": current_metrics["holes"],
+            "current_max_height": current_metrics["max_height"],
+            "current_max_well_depth": current_metrics["max_well_depth"],
+            "raw_zero_hole_count": sum(
+                1 for m in raw_candidates
+                if m["total_holes_after"] <= current_metrics["holes"]
+            ),
+        }
+        return pool
 
     def lock_blocks_to_board(self, shape, col, drop_y, piece_name):
         for x, y in shape:
