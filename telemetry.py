@@ -33,6 +33,7 @@ def compact_candidate(move):
         "cumulative_wells",
         "lines_cleared",
         "max_height",
+        "heuristic_score",
     )
     return {key: move.get(key) for key in keys}
 
