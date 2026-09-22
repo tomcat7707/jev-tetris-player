@@ -1,6 +1,11 @@
 import unittest
 
 from tetris_engine import TetrisGame
+from path_planner import find_control_path
+
+
+def board_from_strings(rows):
+    return [[None if ch == "." else ch for ch in row] for row in rows]
 
 
 class TetrisEngineTests(unittest.TestCase):
@@ -28,20 +33,77 @@ class TetrisEngineTests(unittest.TestCase):
         self.assertFalse(game.can_place("I", 1, 3, game.height - 2))
         self.assertTrue(game.can_place("T", 0, 3, 0))
 
-    def test_candidate_generation_returns_ranked_fallback_pool(self):
+    def test_candidate_generation_contains_dellacherie_and_two_ply_features(self):
         game = TetrisGame(randomizer_mode="iid", seed=7)
-        candidates = game.generate_candidate_moves(game.current_piece)
+        candidates = game.generate_candidate_moves(
+            game.current_piece,
+            next_piece=game.next_piece,
+        )
         self.assertGreaterEqual(len(candidates), 1)
-        self.assertLessEqual(len(candidates), 5)
-        scores = []
-        for candidate in candidates:
-            self.assertIn("id", candidate)
-            self.assertIn("drop_y", candidate)
-            self.assertIn("contact_edges", candidate)
-            self.assertIn("heuristic_score", candidate)
-            scores.append(candidate["heuristic_score"])
+        self.assertLessEqual(len(candidates), 8)
 
-        self.assertEqual(scores, sorted(scores, reverse=True))
+        required = {
+            "id",
+            "drop_y",
+            "heuristic_score",
+            "row_transitions",
+            "col_transitions",
+            "eroded_piece_cells",
+            "hole_depth",
+            "next_best_holes",
+            "next_best_max_height",
+            "two_ply_score",
+            "safety_filtered",
+        }
+        for candidate in candidates:
+            self.assertTrue(required.issubset(candidate))
+            self.assertTrue(candidate["safety_filtered"])
+
+    def test_safety_envelope_rejects_avoidable_holes_from_logged_failure(self):
+        # 2026-09-22 run #2 piece 37 직전 보드.
+        # 기존 알고리즘은 O를 오른쪽에 놓아 holes 0 -> 3을 만들었다.
+        game = TetrisGame(randomizer_mode="iid", seed=1)
+        game.board = board_from_strings([
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "..........",
+            "....OOOO..",
+            "...JOOOO..",
+            "...JJJOO..",
+            "..JJJLOO..",
+            "I.OOJLJJJ.",
+            "I.OOSLLSJ.",
+            "I.ZSSSSSS.",
+        ])
+
+        candidates = game.generate_candidate_moves("O", next_piece="I")
+        self.assertGreater(len(candidates), 0)
+        self.assertEqual(game.count_holes(), 0)
+        self.assertTrue(all(c["total_holes_after"] == 0 for c in candidates))
+
+    def test_path_planner_finds_collision_aware_route(self):
+        game = TetrisGame(randomizer_mode="iid", seed=1)
+        path = find_control_path(
+            game,
+            "T",
+            start_x=3,
+            start_y=0,
+            start_rot=0,
+            target_col=0,
+            target_rot=2,
+        )
+        self.assertIsNotNone(path)
+        self.assertGreater(len(path), 0)
 
 
 if __name__ == "__main__":

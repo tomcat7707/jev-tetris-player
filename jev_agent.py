@@ -26,38 +26,52 @@ class JevTetrisAgent:
         max_h = max(heights)
         current_holes = board_summary["current_holes"]
 
-        if max_h >= 12:
+        if max_h >= 15:
             strategy_prompt = (
-                "EMERGENCY: Stack is high. Prioritize low landing_height and clear lines. "
-                "Do not place tall vertical pieces on ridges."
+                "CRITICAL SURVIVAL: The stack is near top-out. Preserve spawn space, "
+                "avoid creating holes, and prefer continuations that keep next-piece "
+                "max height low."
             )
         elif current_holes > 0:
             strategy_prompt = (
-                "RECOVERY: Clear lines to uncover holes. Pick snug interlocking placements."
+                "RECOVERY: Do not add avoidable holes. Prefer moves whose two-ply "
+                "continuation reduces or preserves holes while keeping the stack smooth."
             )
         else:
             strategy_prompt = (
-                "CLEAN INTERLOCKING: Maximize contact fit. "
-                "Nest T-blocks (ㅗ) into sockets and use flat orientations (ㅜ/ㅡ) on plains. "
-                "Avoid perching sideways (ㅏ/ㅓ) on edges."
+                "CLEAN BUILD: Keep zero holes whenever possible. Prefer low-transition, "
+                "low-well boards with a safe continuation for the known next piece."
             )
 
         criteria = {}
         for move in candidate_moves:
             m_id = move["id"]
-            fit_status = f"Contact: {move['contact_edges']} edges"
-            overhang_status = f"Overhangs: {move['overhangs']} gaps"
             criteria[m_id] = (
                 f"Col {move['col']}, Shape: [{move['rot_label']}] | "
-                f"Landing: {move['landing_height']}칸, {fit_status}, {overhang_status}, "
-                f"Lines Cleared: {move['lines_cleared']}, Holes After: {move['total_holes_after']}."
+                f"HolesNow: {move['total_holes_after']} (delta {move['delta_holes']:+d}), "
+                f"NextPieceBestHoles: {move.get('next_best_holes')}, "
+                f"MaxHeight: {move['max_height']}, "
+                f"NextBestMaxHeight: {move.get('next_best_max_height')}, "
+                f"RowTrans: {move['row_transitions']}, ColTrans: {move['col_transitions']}, "
+                f"Wells: {move['cumulative_wells']}, HoleDepth: {move['hole_depth']}, "
+                f"Lines: {move['lines_cleared']}, ErodedCells: {move['eroded_piece_cells']}, "
+                f"DellacherieScore: {move['heuristic_score']}, "
+                f"TwoPlyScore: {move.get('two_ply_score')}."
             )
 
         instructions = (
-            "Select the single best placement ID.\n"
-            "1. FIT QUALITY: Strongly prefer moves with High Contact and 0 Overhangs (snug puzzle fit).\n"
-            "2. TERRAIN MATCH: Fit T-pieces nose-down (ㅗ) into depressions. Do NOT perch sideways (ㅏ/ㅓ) on ledges.\n"
-            "3. SURVIVAL: Keep landing height low and clear lines whenever safe."
+            "Select the single best placement ID for long-run survival.\n"
+            "The candidate list has already passed a deterministic safety envelope.\n"
+            "Priority order:\n"
+            "1. HOLES: Prefer fewer holes now and after the known next piece. Never trade "
+            "clean structure for cosmetic contact/fit.\n"
+            "2. TWO-PLY SURVIVAL: Use NextPieceBestHoles and NextBestMaxHeight. Prefer a "
+            "current move that leaves a strong continuation for NEXT.\n"
+            "3. SURFACE QUALITY: Prefer fewer row/column transitions, shallower holes, "
+            "and smaller wells.\n"
+            "4. HEIGHT: Preserve spawn space and avoid tall local towers.\n"
+            "5. LINE CLEAR: Reward safe clears, but not when they create avoidable holes.\n"
+            "Contact/shape aesthetics are secondary and must not override structural safety."
         )
 
         payload = {

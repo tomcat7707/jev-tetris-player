@@ -3,7 +3,7 @@ name: unit-tests
 on:
   push:
     branches:
-      - experiment/realtime-stress-test
+      - "experiment/**"
   pull_request:
     branches:
       - main
@@ -16,5 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Syntax check
+        run: python -m py_compile main.py tetris_engine.py jev_agent.py telemetry.py path_planner.py
       - name: Run engine tests
         run: python -m unittest -v

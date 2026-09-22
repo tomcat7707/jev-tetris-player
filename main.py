@@ -18,6 +18,7 @@ from config import (
 from tetris_engine import TetrisGame, PIECE_COLORS, SHAPES, ORIENTATION_LABELS
 from jev_agent import JevTetrisAgent
 from telemetry import ExperimentLogger, compact_board, compact_candidate
+from path_planner import find_control_path, first_reachable_candidate
 
 
 def draw_block(screen, x, y, color, border_color=(40, 40, 40), width=0):
@@ -285,20 +286,69 @@ def main():
             if state == "FALLING" and result_serial == piece_serial:
                 elapsed_ms = int((time.perf_counter() - spawn_time) * 1000)
 
-                if res.get("success") and elapsed_ms <= JEV_DECISION_DEADLINE_MS:
+                if (
+                    res.get("success")
+                    and elapsed_ms <= JEV_DECISION_DEADLINE_MS
+                    and not decision_finalized
+                ):
                     best_id = res["choice_id"]
                     jev_move = next(
                         (c for c in candidates if c["id"] == best_id),
                         candidates[0],
                     )
 
-                    chosen_move_data = jev_move
-                    target_col = jev_move["col"]
-                    target_rot = jev_move["rot"]
-                    decision_applied = True
+                    # JEV가 고른 최종 착지점이 "지금 위치"에서 실제로 도달 가능한지
+                    # 먼저 확인한다. 좋은 목적지라도 갈 수 없으면 행동 후보가 아니다.
+                    jev_path = find_control_path(
+                        game,
+                        game.current_piece,
+                        grid_x,
+                        grid_y,
+                        grid_rot,
+                        jev_move["col"],
+                        jev_move["rot"],
+                    )
+
+                    applied_move = jev_move
+                    decision_source = "JEV"
+                    if jev_path is None:
+                        telemetry.count("jev_unreachable")
+                        reachable_move, reachable_path = first_reachable_candidate(
+                            game,
+                            game.current_piece,
+                            candidates,
+                            grid_x,
+                            grid_y,
+                            grid_rot,
+                        )
+                        if reachable_move is not None:
+                            applied_move = reachable_move
+                            decision_source = "JEV→REACHABLE"
+                            telemetry.event(
+                                "jev_choice_unreachable",
+                                piece_serial=piece_serial,
+                                jev_choice=compact_candidate(jev_move),
+                                replacement=compact_candidate(reachable_move),
+                                grid={"x": grid_x, "y": grid_y, "rot": grid_rot},
+                            )
+                        else:
+                            telemetry.count("path_blocked")
+                            decision_source = "NO_REACHABLE_TARGET"
+                            telemetry.event(
+                                "no_reachable_candidate",
+                                piece_serial=piece_serial,
+                                grid={"x": grid_x, "y": grid_y, "rot": grid_rot},
+                                candidates=[compact_candidate(c) for c in candidates],
+                            )
+
+                    chosen_move_data = applied_move
+                    target_col = applied_move["col"]
+                    target_rot = applied_move["rot"]
+                    decision_applied = (decision_source == "JEV")
                     decision_finalized = True
 
-                    telemetry.count("jev_applied")
+                    if decision_source == "JEV":
+                        telemetry.count("jev_applied")
                     telemetry.event(
                         "decision_applied",
                         piece_serial=piece_serial,
@@ -307,6 +357,8 @@ def main():
                         latency_ms=res.get("latency_ms", elapsed_ms),
                         heuristic_fallback=compact_candidate(candidates[0]),
                         jev_choice=compact_candidate(jev_move),
+                        applied_choice=compact_candidate(applied_move),
+                        decision_source=decision_source,
                         jev_overrode_heuristic=(jev_move["id"] != candidates[0]["id"]),
                         grid_at_apply={"x": grid_x, "y": grid_y, "rot": grid_rot},
                     )
@@ -318,12 +370,14 @@ def main():
                         "heights": summary["column_heights"],
                         "terrain_diagnosis": terrain,
                         "strategy_goal": goal,
-                        "chosen_move": jev_move,
-                        "decision_narrative": "JEV: " + move_narrative(jev_move),
-                        "control_action": "JEV 목표 수신 → 실제 이동 경로로 추적",
+                        "chosen_move": applied_move,
+                        "decision_narrative": (
+                            decision_source + ": " + move_narrative(applied_move)
+                        ),
+                        "control_action": "JEV 판단 후 reachability 검증 → 경로 추적",
                         "confidence": int(res.get("confidence", 0.0) * 100),
                         "latency_ms": res.get("latency_ms", elapsed_ms),
-                        "decision_source": "JEV",
+                        "decision_source": decision_source,
                         "evaluated_moves": candidates,
                     }
                     api_status_text = (
@@ -333,6 +387,7 @@ def main():
                     api_status_color = (100, 255, 120)
 
                 elif res.get("success"):
+                    was_already_finalized = decision_finalized
                     decision_finalized = True
                     telemetry.count("jev_late")
                     telemetry.event(
@@ -342,6 +397,7 @@ def main():
                         deadline_ms=JEV_DECISION_DEADLINE_MS,
                         latency_ms=res.get("latency_ms", elapsed_ms),
                         ignored_choice_id=res.get("choice_id"),
+                        already_control_committed=was_already_finalized,
                         active_target=compact_candidate(chosen_move_data),
                         grid={"x": grid_x, "y": grid_y, "rot": grid_rot},
                     )
@@ -398,12 +454,15 @@ def main():
                 if not game.can_place(game.current_piece, grid_rot, grid_x, grid_y):
                     game.game_over = True
                 else:
-                    candidates = game.generate_candidate_moves(game.current_piece)
+                    candidates = game.generate_candidate_moves(
+                        game.current_piece,
+                        next_piece=game.next_piece,
+                    )
                     if not candidates:
                         game.game_over = True
                     else:
-                        # JEV를 기다리는 동안 사용할 deterministic fallback.
-                        # generate_candidate_moves()는 이미 휴리스틱 점수 순으로 정렬되어 있다.
+                        # JEV가 늦거나 실패할 때 사용할 deterministic fallback.
+                        # v2는 safety envelope + 2-ply lookahead 순으로 정렬되어 있다.
                         active_candidates = candidates
                         chosen_move_data = candidates[0]
                         target_col = chosen_move_data["col"]
@@ -458,7 +517,62 @@ def main():
             elif state == "FALLING":
                 elapsed_ms = int((time.perf_counter() - spawn_time) * 1000)
 
-                # JEV deadline은 현실 시간 기준이다. 게임 세계는 멈추지 않는다.
+                # 상단이 높아져 이동 시간이 촉박해지면 고정 deadline보다 먼저
+                # fallback을 확정한다. 외부 AI를 기다리다가 실행 가능 시간을 잃지 않기 위한
+                # control-aware deadline이다.
+                if not decision_finalized and chosen_move_data is not None:
+                    fallback_path = find_control_path(
+                        game,
+                        game.current_piece,
+                        grid_x,
+                        grid_y,
+                        grid_rot,
+                        chosen_move_data["col"],
+                        chosen_move_data["rot"],
+                    )
+                    if fallback_path is None:
+                        reachable_move, fallback_path = first_reachable_candidate(
+                            game,
+                            game.current_piece,
+                            active_candidates,
+                            grid_x,
+                            grid_y,
+                            grid_rot,
+                        )
+                        if reachable_move is not None:
+                            chosen_move_data = reachable_move
+                            target_col = reachable_move["col"]
+                            target_rot = reachable_move["rot"]
+
+                    if fallback_path is not None:
+                        remaining_rows = max(0, chosen_move_data["drop_y"] - grid_y)
+                        natural_time_ms = (
+                            remaining_rows * gravity_speed / FPS * 1000.0
+                        )
+                        action_time_ms = (
+                            len(fallback_path) * das_speed / FPS * 1000.0
+                        )
+                        safety_margin_ms = 220.0
+
+                        if natural_time_ms <= action_time_ms + safety_margin_ms:
+                            decision_finalized = True
+                            telemetry.count("control_early_fallbacks")
+                            telemetry.event(
+                                "control_early_fallback",
+                                piece_serial=piece_serial,
+                                elapsed_since_spawn_ms=elapsed_ms,
+                                remaining_rows=remaining_rows,
+                                estimated_natural_time_ms=round(natural_time_ms, 1),
+                                estimated_action_time_ms=round(action_time_ms, 1),
+                                fallback=compact_candidate(chosen_move_data),
+                                grid={"x": grid_x, "y": grid_y, "rot": grid_rot},
+                            )
+                            api_status_text = "실행 여유 부족 → 안전 fallback 조기 확정"
+                            api_status_color = (255, 185, 80)
+                            inspector_data["decision_source"] = "HEURISTIC/CONTROL"
+                            inspector_data["control_action"] = "실행시간 확보를 위해 fallback 조기 시작"
+
+                # 절대 JEV deadline도 유지한다.
                 if not decision_finalized and elapsed_ms >= JEV_DECISION_DEADLINE_MS:
                     decision_finalized = True
                     telemetry.count("deadline_fallbacks")
@@ -509,56 +623,67 @@ def main():
                 das_timer += 1
                 gravity_timer += 1
 
-                # ----- collision-aware 실제 키 입력 -----
-                if das_timer >= das_speed:
+                # JEV가 판단 중인 동안에는 자연 중력만 진행한다.
+                # 이전 버전처럼 fallback 방향으로 먼저 움직였다가 JEV가 반대편을 골라
+                # 되돌아오는 손실을 만들지 않는다.
+                if decision_finalized and das_timer >= das_speed:
                     das_timer = 0
-                    num_rot = len(SHAPES[game.current_piece])
+                    path = find_control_path(
+                        game,
+                        game.current_piece,
+                        grid_x,
+                        grid_y,
+                        grid_rot,
+                        target_col,
+                        target_rot,
+                    )
 
-                    if grid_rot != target_rot:
-                        new_rot = (grid_rot + 1) % num_rot
-                        rotated = False
-
-                        # 간단한 deterministic wall-kick.
-                        for kick_x in (0, -1, 1, -2, 2):
-                            test_x = grid_x + kick_x
-                            if game.can_place(
-                                game.current_piece,
-                                new_rot,
-                                test_x,
-                                grid_y,
-                            ):
-                                grid_x = test_x
-                                grid_rot = new_rot
-                                rotated = True
-                                r_lbl = ORIENTATION_LABELS[game.current_piece].get(
-                                    grid_rot, ""
-                                )
-                                inspector_data["control_action"] = (
-                                    f"회전 입력 [{r_lbl}]"
-                                    + (f" + kick {kick_x:+d}" if kick_x else "")
-                                )
-                                break
-
-                        if not rotated:
-                            inspector_data["control_action"] = "회전 시도 차단: 충돌"
-
-                    elif grid_x != target_col:
-                        step = 1 if grid_x < target_col else -1
-                        test_x = grid_x + step
-                        if game.can_place(
+                    if path is None:
+                        telemetry.count("path_blocked")
+                        reachable_move, replacement_path = first_reachable_candidate(
+                            game,
                             game.current_piece,
-                            grid_rot,
-                            test_x,
+                            active_candidates,
+                            grid_x,
                             grid_y,
-                        ):
-                            grid_x = test_x
-                            inspector_data["control_action"] = (
-                                "우측 이동 키 입력 (▶)"
-                                if step > 0
-                                else "좌측 이동 키 입력 (◀)"
+                            grid_rot,
+                        )
+                        if reachable_move is not None:
+                            old_target = chosen_move_data
+                            chosen_move_data = reachable_move
+                            target_col = reachable_move["col"]
+                            target_rot = reachable_move["rot"]
+                            path = replacement_path
+                            inspector_data["chosen_move"] = reachable_move
+                            inspector_data["decision_source"] += "→REPLAN"
+                            inspector_data["decision_narrative"] += " | 경로 막힘: 도달 가능한 후보로 재계획"
+                            telemetry.event(
+                                "control_replanned",
+                                piece_serial=piece_serial,
+                                old_target=compact_candidate(old_target),
+                                new_target=compact_candidate(reachable_move),
+                                grid={"x": grid_x, "y": grid_y, "rot": grid_rot},
                             )
-                        else:
-                            inspector_data["control_action"] = "좌우 이동 차단: 충돌"
+
+                    if path:
+                        action, kick_x = path[0]
+                        if action == "LEFT":
+                            grid_x -= 1
+                            inspector_data["control_action"] = "경로계획: 좌측 이동 (◀)"
+                        elif action == "RIGHT":
+                            grid_x += 1
+                            inspector_data["control_action"] = "경로계획: 우측 이동 (▶)"
+                        elif action == "ROT":
+                            num_rot = len(SHAPES[game.current_piece])
+                            grid_rot = (grid_rot + 1) % num_rot
+                            grid_x += kick_x
+                            r_lbl = ORIENTATION_LABELS[game.current_piece].get(
+                                grid_rot, ""
+                            )
+                            inspector_data["control_action"] = (
+                                f"경로계획: 회전 [{r_lbl}]"
+                                + (f" + kick {kick_x:+d}" if kick_x else "")
+                            )
 
                 # JEV가 아직 생각 중일 때는 소프트드롭하지 않는다.
                 # 자연 중력은 계속 적용되므로 시간 압박은 유지된다.

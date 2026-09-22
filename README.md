@@ -17,6 +17,25 @@ JEV의 판단 지연을 실제 게임 시간 안에서 검증하기 위한 테�
 
 즉 게임 세계는 JEV가 생각하는 동안 멈추지 않습니다.
 
+## v2: Safe Lookahead 실험
+
+두 번째 실시간 IID 로그에서 확인된 실패 원인을 반영한 실험 버전입니다.
+
+핵심 변경:
+
+- **Safety envelope**: 현재보다 holes를 늘리지 않는 후보가 하나라도 있으면, hole을 새로 만드는 후보는 JEV에게 보내지 않습니다.
+- **정식 Dellacherie 6-feature 복원**: landing height, eroded piece cells, row transitions, column transitions, holes, cumulative wells를 사용합니다.
+- **2-ply lookahead**: 현재 블록만 보지 않고 이미 알고 있는 NEXT 블록까지 한 수 더 시뮬레이션해 `next_best_holes`, `next_best_max_height`, `two_ply_score`를 JEV에 전달합니다.
+- **Reachability planner**: JEV가 좋은 착지점을 골라도 현재 떨어지는 위치에서 실제로 갈 수 없다면 도달 가능한 안전 후보로 재계획합니다.
+- **Control-aware deadline**: 상단이 높아져 이동 시간이 부족해지면 JEV의 절대 timeout보다 먼저 deterministic fallback을 확정합니다.
+- **판단 중 자연 중력만 유지**: JEV 응답 전에는 fallback 방향으로 먼저 움직이지 않아, 늦게 도착한 JEV 판단 때문에 반대 방향으로 되돌아가는 손실을 줄였습니다.
+
+이 버전의 질문은 다음과 같습니다.
+
+> 좋은 판단 모델에게 더 많은 자유를 주는 것이 좋은가,  
+> 아니면 deterministic safety envelope 안에서만 판단하게 하는 것이  
+> 장기 생존성과 실제 제어 가능성을 높이는가?
+
 ## 블록 randomizer
 
 기본값은 **IID random**입니다.

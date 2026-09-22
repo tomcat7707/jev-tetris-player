@@ -4,10 +4,10 @@ SHAPES = {
     'I': [[(0, 1), (1, 1), (2, 1), (3, 1)],
           [(2, 0), (2, 1), (2, 2), (2, 3)]],
     'O': [[(1, 0), (2, 0), (1, 1), (2, 1)]],
-    'T': [[(1, 0), (0, 1), (1, 1), (2, 1)],  # 0: ㅜ (바닥평탄)
-          [(1, 0), (1, 1), (2, 1), (1, 2)],  # 1: ㅏ (세로우측)
-          [(0, 1), (1, 1), (2, 1), (1, 2)],  # 2: ㅗ (홈/웅덩이 메우기)
-          [(1, 0), (0, 1), (1, 1), (1, 2)]], # 3: ㅓ (세로좌측)
+    'T': [[(1, 0), (0, 1), (1, 1), (2, 1)],
+          [(1, 0), (1, 1), (2, 1), (1, 2)],
+          [(0, 1), (1, 1), (2, 1), (1, 2)],
+          [(1, 0), (0, 1), (1, 1), (1, 2)]],
     'S': [[(1, 0), (2, 0), (0, 1), (1, 1)],
           [(1, 0), (1, 1), (2, 1), (2, 2)]],
     'Z': [[(0, 0), (1, 0), (1, 1), (2, 1)],
@@ -40,6 +40,18 @@ PIECE_COLORS = {
     'Z': (240, 0, 0),
     'J': (0, 100, 240),
     'L': (240, 140, 0)
+}
+
+# Pierre Dellacherie / El-Tetris 계열의 대표 6-feature weights.
+# 이전 버전은 wells/column-transition 가중치가 뒤섞여 있었고
+# row transition / eroded piece cells가 누락되어 있었다.
+DELLACHERIE_WEIGHTS = {
+    "landing_height": -4.500158825082766,
+    "eroded_piece_cells": 3.4181268101392694,
+    "row_transitions": -3.2178882868487753,
+    "col_transitions": -9.348695305445199,
+    "holes": -7.899265427351652,
+    "cumulative_wells": -3.3855972247263626,
 }
 
 
@@ -75,8 +87,7 @@ class TetrisGame:
         self.next_piece = self._draw_piece()
 
     def can_place(self, piece_name, rot_idx, col, row, board=None):
-        """현재 보드에서 실제 이동/회전/낙하가 가능한지 검사한다."""
-        target = board or self.board
+        target = board if board is not None else self.board
         shape = SHAPES[piece_name][rot_idx % len(SHAPES[piece_name])]
 
         for x, y in shape:
@@ -91,7 +102,7 @@ class TetrisGame:
         return True
 
     def get_column_heights(self, board=None):
-        target = board or self.board
+        target = board if board is not None else self.board
         heights = []
         for c in range(self.width):
             h = 0
@@ -106,41 +117,112 @@ class TetrisGame:
         heights = self.get_column_heights(board)
 
         holes = 0
+        hole_depth = 0
+        rows_with_holes = set()
+
         for c in range(self.width):
+            filled_above = 0
             block_found = False
             for r in range(self.height):
                 if board[r][c] is not None:
                     block_found = True
-                elif block_found and board[r][c] is None:
+                    filled_above += 1
+                elif block_found:
                     holes += 1
+                    hole_depth += filled_above
+                    rows_with_holes.add(r)
 
+        # 좌/우 벽을 filled로 취급하는 표준적인 row transition 계산.
+        row_transitions = 0
+        for r in range(self.height):
+            prev = 1
+            for c in range(self.width):
+                curr = 1 if board[r][c] is not None else 0
+                if curr != prev:
+                    row_transitions += 1
+                prev = curr
+            if prev != 1:
+                row_transitions += 1
+
+        # 바닥을 filled로 취급한다. 상단은 empty 상태에서 시작한다.
         col_transitions = 0
         for c in range(self.width):
-            prev = 1
-            for r in range(self.height - 1, -1, -1):
+            prev = 0
+            for r in range(self.height):
                 curr = 1 if board[r][c] is not None else 0
                 if curr != prev:
                     col_transitions += 1
                 prev = curr
-            if prev != 0:
+            if prev != 1:
                 col_transitions += 1
 
         cumulative_wells = 0
         for c in range(self.width):
-            left_h = self.height if c == 0 else heights[c - 1]
-            right_h = self.height if c == self.width - 1 else heights[c + 1]
-            min_adj = min(left_h, right_h)
-            if min_adj > heights[c]:
-                depth = min_adj - heights[c]
-                cumulative_wells += (depth * (depth + 1)) // 2
+            r = 0
+            while r < self.height:
+                if board[r][c] is not None:
+                    r += 1
+                    continue
 
-        return holes, col_transitions, cumulative_wells
+                left_filled = c == 0 or board[r][c - 1] is not None
+                right_filled = c == self.width - 1 or board[r][c + 1] is not None
+                if not (left_filled and right_filled):
+                    r += 1
+                    continue
+
+                # 하나의 연속 well을 한 번만 계산한다.
+                depth = 0
+                rr = r
+                while rr < self.height and board[rr][c] is None:
+                    left_ok = c == 0 or board[rr][c - 1] is not None
+                    right_ok = c == self.width - 1 or board[rr][c + 1] is not None
+                    if not (left_ok and right_ok):
+                        break
+                    depth += 1
+                    rr += 1
+
+                cumulative_wells += depth * (depth + 1) // 2
+                r = rr
+
+        bumpiness = sum(abs(heights[i] - heights[i + 1]) for i in range(self.width - 1))
+
+        return {
+            "heights": heights,
+            "aggregate_height": sum(heights),
+            "max_height": max(heights) if heights else 0,
+            "bumpiness": bumpiness,
+            "holes": holes,
+            "hole_depth": hole_depth,
+            "rows_with_holes": len(rows_with_holes),
+            "row_transitions": row_transitions,
+            "col_transitions": col_transitions,
+            "cumulative_wells": cumulative_wells,
+        }
 
     def count_holes(self, board=None):
-        h, _, _ = self.evaluate_board_metrics(board or self.board)
-        return h
+        target = board if board is not None else self.board
+        return self.evaluate_board_metrics(target)["holes"]
 
-    def simulate_drop(self, piece_name, rot_idx, col_offset):
+    def score_move(self, move):
+        w = DELLACHERIE_WEIGHTS
+        score = (
+            w["landing_height"] * move["landing_height"]
+            + w["eroded_piece_cells"] * move["eroded_piece_cells"]
+            + w["row_transitions"] * move["row_transitions"]
+            + w["col_transitions"] * move["col_transitions"]
+            + w["holes"] * move["total_holes_after"]
+            + w["cumulative_wells"] * move["cumulative_wells"]
+        )
+
+        # Dellacherie 바깥의 safety residual.
+        # 새 hole은 이후 선택지를 급격히 줄이므로 "현재보다 악화" 자체에 추가 비용을 둔다.
+        if move["delta_holes"] > 0:
+            score -= 18.0 * move["delta_holes"]
+
+        return score
+
+    def simulate_drop(self, piece_name, rot_idx, col_offset, board=None):
+        source_board = board if board is not None else self.board
         rotations = SHAPES[piece_name]
         shape = rotations[rot_idx % len(rotations)]
 
@@ -150,7 +232,7 @@ class TetrisGame:
             return None
 
         drop_y = 0
-        while self.can_place(piece_name, rot_idx, col_offset, drop_y):
+        while self.can_place(piece_name, rot_idx, col_offset, drop_y, source_board):
             drop_y += 1
         drop_y -= 1
 
@@ -168,35 +250,40 @@ class TetrisGame:
             bx = col_offset + cx
             by = drop_y + cy
 
-            if by + 1 >= self.height or self.board[by + 1][bx] is not None:
+            if by + 1 >= self.height or source_board[by + 1][bx] is not None:
                 contact_edges += 1
             elif (cx, cy + 1) not in shape_set:
                 overhangs += 1
 
-            if bx - 1 < 0 or (by < self.height and self.board[by][bx - 1] is not None):
+            if bx - 1 < 0 or source_board[by][bx - 1] is not None:
                 contact_edges += 1
-            if bx + 1 >= self.width or (by < self.height and self.board[by][bx + 1] is not None):
+            if bx + 1 >= self.width or source_board[by][bx + 1] is not None:
                 contact_edges += 1
 
-        sim_board = [row[:] for row in self.board]
+        sim_board = [row[:] for row in source_board]
+        piece_cells = []
         for x, y in shape:
             nx = col_offset + x
             ny = drop_y + y
             if 0 <= ny < self.height and 0 <= nx < self.width:
                 sim_board[ny][nx] = piece_name
+                piece_cells.append((nx, ny))
 
-        cleared = sum(1 for row in sim_board if all(cell is not None for cell in row))
-        new_board = [row for row in sim_board if not all(cell is not None for cell in row)]
+        full_rows = [r for r in range(self.height) if all(cell is not None for cell in sim_board[r])]
+        cleared = len(full_rows)
+        piece_cells_erased = sum(1 for _, py in piece_cells if py in full_rows)
+        eroded_piece_cells = cleared * piece_cells_erased
+
+        new_board = [sim_board[r] for r in range(self.height) if r not in full_rows]
         while len(new_board) < self.height:
             new_board.insert(0, [None for _ in range(self.width)])
 
-        new_heights = self.get_column_heights(new_board)
-        holes, col_trans, wells = self.evaluate_board_metrics(new_board)
-        curr_holes, _, _ = self.evaluate_board_metrics(self.board)
+        metrics_after = self.evaluate_board_metrics(new_board)
+        current_metrics = self.evaluate_board_metrics(source_board)
 
         rot_label = ORIENTATION_LABELS.get(piece_name, {}).get(rot_idx, f"Rot{rot_idx}")
 
-        return {
+        move = {
             "rot": rot_idx,
             "rot_label": rot_label,
             "col": col_offset,
@@ -205,52 +292,105 @@ class TetrisGame:
             "landing_height": landing_height,
             "contact_edges": contact_edges,
             "overhangs": overhangs,
-            "delta_holes": holes - curr_holes,
-            "total_holes_after": holes,
-            "col_transitions": col_trans,
-            "cumulative_wells": wells,
+            "delta_holes": metrics_after["holes"] - current_metrics["holes"],
+            "total_holes_after": metrics_after["holes"],
+            "hole_depth": metrics_after["hole_depth"],
+            "rows_with_holes": metrics_after["rows_with_holes"],
+            "row_transitions": metrics_after["row_transitions"],
+            "col_transitions": metrics_after["col_transitions"],
+            "cumulative_wells": metrics_after["cumulative_wells"],
+            "bumpiness": metrics_after["bumpiness"],
+            "aggregate_height": metrics_after["aggregate_height"],
             "lines_cleared": cleared,
-            "max_height": max(new_heights),
-            "final_board": new_board
+            "eroded_piece_cells": eroded_piece_cells,
+            "max_height": metrics_after["max_height"],
+            "final_board": new_board,
         }
+        move["heuristic_score"] = round(self.score_move(move), 3)
+        return move
 
-    def generate_candidate_moves(self, piece_name):
-        raw_candidates = []
-        rotations = SHAPES[piece_name]
-        for rot in range(len(rotations)):
+    def _raw_candidates(self, piece_name, board):
+        raw = []
+        for rot in range(len(SHAPES[piece_name])):
             for col in range(-2, self.width):
-                res = self.simulate_drop(piece_name, rot, col)
-                if res:
-                    res["id"] = f"c{col}_{res['rot_label']}"
-                    raw_candidates.append(res)
+                move = self.simulate_drop(piece_name, rot, col, board)
+                if move:
+                    move["id"] = f"c{col}_{move['rot_label']}"
+                    raw.append(move)
+        return raw
 
+    def _safety_pool(self, candidates, board):
+        if not candidates:
+            return []
+
+        current_metrics = self.evaluate_board_metrics(board)
+        current_holes = current_metrics["holes"]
+
+        non_worsening = [m for m in candidates if m["total_holes_after"] <= current_holes]
+        if non_worsening:
+            pool = non_worsening
+
+            # 상단이 매우 위험할 때에만, 높이를 크게 낮추는 2+ line clear에
+            # 한해 hole 1개 증가를 제한적으로 허용한다.
+            if current_metrics["max_height"] >= 15:
+                safest_height = min(m["max_height"] for m in non_worsening)
+                emergency_rescue = [
+                    m for m in candidates
+                    if m["delta_holes"] <= 1
+                    and m["lines_cleared"] >= 2
+                    and m["max_height"] <= safest_height - 2
+                ]
+                seen = {m["id"] for m in pool}
+                pool.extend(m for m in emergency_rescue if m["id"] not in seen)
+            return pool
+
+        # 모든 수가 hole을 늘리는 상황이면 가장 적게 악화되는 수만 남긴다.
+        min_holes = min(m["total_holes_after"] for m in candidates)
+        return [m for m in candidates if m["total_holes_after"] == min_holes]
+
+    def generate_candidate_moves(self, piece_name, next_piece=None, limit=8):
+        raw_candidates = self._raw_candidates(piece_name, self.board)
         if not raw_candidates:
             return []
 
-        surviving_moves = [m for m in raw_candidates if m["landing_height"] < 19]
-        valid_pool = surviving_moves if surviving_moves else raw_candidates
+        safe_pool = self._safety_pool(raw_candidates, self.board)
 
-        def score_move(m):
-            score = (
-                - 4.5 * m["landing_height"]
-                + 3.4 * (m["lines_cleared"] * 4)
-                - 8.0 * m["total_holes_after"]
-                - 3.2 * m["cumulative_wells"]
-                - 3.8 * m["col_transitions"]
-                + 2.5 * m["contact_edges"]
-                - 6.0 * m["overhangs"]
+        # 안전 envelope 안에서 다음 블록까지 한 수 더 내다본다.
+        for move in safe_pool:
+            move["safety_filtered"] = True
+            move["lookahead_piece"] = next_piece
+            move["next_best_score"] = None
+            move["next_best_holes"] = move["total_holes_after"]
+            move["next_best_max_height"] = move["max_height"]
+            move["two_ply_score"] = move["heuristic_score"]
+
+            if next_piece:
+                next_raw = self._raw_candidates(next_piece, move["final_board"])
+                next_safe = self._safety_pool(next_raw, move["final_board"])
+
+                if next_safe:
+                    next_best = max(next_safe, key=lambda m: m["heuristic_score"])
+                    move["next_best_score"] = next_best["heuristic_score"]
+                    move["next_best_holes"] = next_best["total_holes_after"]
+                    move["next_best_max_height"] = next_best["max_height"]
+                    move["next_best_id"] = next_best["id"]
+                    move["two_ply_score"] = round(
+                        move["heuristic_score"] + 0.35 * next_best["heuristic_score"],
+                        3,
+                    )
+
+        # 동일 safety envelope에서는 다음 블록 이후 holes가 적고,
+        # 2-ply 평가가 좋은 후보를 먼저 보여준다.
+        safe_pool.sort(
+            key=lambda m: (
+                m["total_holes_after"],
+                m["next_best_holes"],
+                -m["two_ply_score"],
+                m["max_height"],
             )
-            if m["landing_height"] <= 8:
-                score += 15.0
-            return score
+        )
 
-        # 로그/사후분석에서 JEV 선택과 휴리스틱 순위를 직접 비교할 수 있게
-        # 각 후보에 계산된 점수를 보존한다.
-        for move in valid_pool:
-            move["heuristic_score"] = round(score_move(move), 3)
-
-        valid_pool.sort(key=lambda m: m["heuristic_score"], reverse=True)
-        return valid_pool[:5]
+        return safe_pool[:limit]
 
     def lock_blocks_to_board(self, shape, col, drop_y, piece_name):
         for x, y in shape:
