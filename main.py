@@ -14,6 +14,9 @@ from config import (
     PIECE_RANDOMIZER,
     TETRIS_RANDOM_SEED,
     JEV_DECISION_DEADLINE_MS,
+    JEV_POLICY,
+    JEV_AMBIGUITY_GAP,
+    JEV_HIGH_STACK_TRIGGER,
 )
 from tetris_engine import TetrisGame, PIECE_COLORS, SHAPES, ORIENTATION_LABELS
 from jev_agent import JevTetrisAgent
@@ -81,6 +84,58 @@ def move_narrative(move):
     return f"{move['col']}번 열 후보 → 협곡 억제 및 안정화"
 
 
+def should_call_jev(policy, summary, candidates):
+    """Deterministic layer가 확실하면 JEV를 건너뛰고, 애매한 상태만 호출한다."""
+    if policy == "always":
+        return True, {"reason": "policy_always"}
+    if policy == "off":
+        return False, {"reason": "policy_off"}
+
+    if not candidates:
+        return False, {"reason": "no_candidates"}
+
+    max_height = max(summary["column_heights"])
+    holes = summary["current_holes"]
+
+    if holes > 0:
+        return True, {
+            "reason": "recovery_holes",
+            "holes": holes,
+            "max_height": max_height,
+        }
+
+    if max_height >= JEV_HIGH_STACK_TRIGGER:
+        return True, {
+            "reason": "high_stack",
+            "holes": holes,
+            "max_height": max_height,
+        }
+
+    if len(candidates) < 2:
+        return False, {
+            "reason": "single_safe_candidate",
+            "holes": holes,
+            "max_height": max_height,
+        }
+
+    top = candidates[0]
+    second = candidates[1]
+    top_score = float(top.get("two_ply_score", top.get("heuristic_score", 0.0)))
+    second_score = float(second.get("two_ply_score", second.get("heuristic_score", 0.0)))
+    gap = top_score - second_score
+
+    call = gap <= JEV_AMBIGUITY_GAP
+    return call, {
+        "reason": "ambiguous_gap" if call else "clear_deterministic_winner",
+        "holes": holes,
+        "max_height": max_height,
+        "top_id": top.get("id"),
+        "second_id": second.get("id"),
+        "two_ply_gap": round(gap, 3),
+        "threshold": JEV_AMBIGUITY_GAP,
+    }
+
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -107,6 +162,9 @@ def main():
             "randomizer": randomizer_mode,
             "random_seed": TETRIS_RANDOM_SEED,
             "jev_deadline_ms": JEV_DECISION_DEADLINE_MS,
+            "jev_policy": JEV_POLICY,
+            "jev_ambiguity_gap": JEV_AMBIGUITY_GAP,
+            "jev_high_stack_trigger": JEV_HIGH_STACK_TRIGGER,
             "board_width": BOARD_WIDTH,
             "board_height": BOARD_HEIGHT,
         }
@@ -494,6 +552,23 @@ def main():
                         decision_applied = False
                         decision_finalized = False
 
+                        jev_call, gate_info = should_call_jev(
+                            JEV_POLICY,
+                            active_summary,
+                            active_candidates,
+                        )
+                        if not jev_call:
+                            decision_finalized = True
+                            decision_requested_for = piece_serial
+                            telemetry.count("jev_skipped")
+                            telemetry.event(
+                                "jev_skipped",
+                                piece_serial=piece_serial,
+                                policy=JEV_POLICY,
+                                gate=gate_info,
+                                fallback=compact_candidate(chosen_move_data),
+                            )
+
                         terrain, goal = terrain_summary(active_summary)
                         inspector_data = {
                             "active_piece": active_summary["current_piece"],
@@ -502,16 +577,36 @@ def main():
                             "terrain_diagnosis": terrain,
                             "strategy_goal": goal,
                             "chosen_move": chosen_move_data,
-                            "decision_narrative": "휴리스틱 fallback: " + move_narrative(chosen_move_data),
-                            "control_action": "블록 즉시 낙하 시작 + JEV 비동기 판단",
+                            "decision_narrative": (
+                                ("휴리스틱 선택: " if decision_finalized else "휴리스틱 fallback: ")
+                                + move_narrative(chosen_move_data)
+                            ),
+                            "control_action": (
+                                "JEV gate 통과 안 함 → deterministic 실행"
+                                if decision_finalized
+                                else "블록 즉시 낙하 시작 + JEV 비동기 판단"
+                            ),
                             "confidence": 0,
                             "latency_ms": 0,
-                            "decision_source": "HEURISTIC/PENDING",
+                            "decision_source": (
+                                "HEURISTIC/GATED"
+                                if decision_finalized and JEV_POLICY == "ambiguous"
+                                else "HEURISTIC/OFF"
+                                if decision_finalized and JEV_POLICY == "off"
+                                else "HEURISTIC/PENDING"
+                            ),
                             "evaluated_moves": candidates,
                         }
 
-                        api_status_text = f"'{game.current_piece}' 낙하 중 / JEV 판단 대기"
-                        api_status_color = (255, 215, 0)
+                        if decision_finalized:
+                            api_status_text = (
+                                f"JEV skip ({JEV_POLICY}) / "
+                                f"{gate_info.get('reason', 'deterministic')}"
+                            )
+                            api_status_color = (120, 210, 255)
+                        else:
+                            api_status_text = f"'{game.current_piece}' 낙하 중 / JEV 판단 대기"
+                            api_status_color = (255, 215, 0)
                         state = "FALLING"
 
             elif state == "FALLING":
