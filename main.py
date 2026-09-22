@@ -17,6 +17,7 @@ from config import (
 )
 from tetris_engine import TetrisGame, PIECE_COLORS, SHAPES, ORIENTATION_LABELS
 from jev_agent import JevTetrisAgent
+from telemetry import ExperimentLogger, compact_board, compact_candidate
 
 
 def draw_block(screen, x, y, color, border_color=(40, 40, 40), width=0):
@@ -97,6 +98,21 @@ def main():
     )
     agent = JevTetrisAgent()
 
+    telemetry = ExperimentLogger(
+        session_config={
+            "fps": FPS,
+            "gravity_speed_frames": 12,
+            "das_speed_frames": 4,
+            "randomizer": randomizer_mode,
+            "random_seed": TETRIS_RANDOM_SEED,
+            "jev_deadline_ms": JEV_DECISION_DEADLINE_MS,
+            "board_width": BOARD_WIDTH,
+            "board_height": BOARD_HEIGHT,
+        }
+    )
+    print(f"[telemetry] JSONL: {telemetry.log_path}")
+    print(f"[telemetry] summary: {telemetry.summary_path}")
+
     running = True
     auto_play = True
 
@@ -149,6 +165,7 @@ def main():
     spawn_time = time.perf_counter()
     active_candidates = []
     active_summary = None
+    game_over_logged = False
 
     def background_api_call(serial, summary, candidates):
         nonlocal is_network_busy, thread_result
@@ -167,9 +184,18 @@ def main():
         nonlocal game, state, chosen_move_data, clearing_rows, locked_blocks
         nonlocal line_flash_timer, lock_timer, piece_serial, thread_result
         nonlocal decision_applied, decision_finalized, decision_requested_for
-        nonlocal active_candidates, active_summary
+        nonlocal active_candidates, active_summary, game_over_logged
 
         selected_mode = mode or randomizer_mode
+        telemetry.count("resets")
+        telemetry.event(
+            "reset",
+            previous_score=game.score,
+            previous_lines=game.lines_cleared_total,
+            previous_holes=game.count_holes(),
+            previous_board=compact_board(game.board),
+            next_randomizer=selected_mode,
+        )
         game = TetrisGame(
             BOARD_WIDTH,
             BOARD_HEIGHT,
@@ -190,6 +216,7 @@ def main():
         decision_requested_for = -1
         active_candidates = []
         active_summary = None
+        game_over_logged = False
 
     while running:
         clock.tick(FPS)
@@ -217,6 +244,21 @@ def main():
             result_serial, res, summary, candidates = thread_result
             thread_result = None
 
+            response_latency = res.get("latency_ms", 0)
+            telemetry.count("jev_responses")
+            telemetry.add_latency(response_latency)
+            telemetry.event(
+                "jev_response_received",
+                piece_serial=result_serial,
+                current_piece_serial=piece_serial,
+                game_state=state,
+                success=bool(res.get("success")),
+                choice_id=res.get("choice_id"),
+                confidence=res.get("confidence"),
+                latency_ms=response_latency,
+                error=res.get("error_msg"),
+            )
+
             # 현재 떨어지고 있는 바로 그 블록의 응답만 허용한다.
             if state == "FALLING" and result_serial == piece_serial:
                 elapsed_ms = int((time.perf_counter() - spawn_time) * 1000)
@@ -233,6 +275,19 @@ def main():
                     target_rot = jev_move["rot"]
                     decision_applied = True
                     decision_finalized = True
+
+                    telemetry.count("jev_applied")
+                    telemetry.event(
+                        "decision_applied",
+                        piece_serial=piece_serial,
+                        elapsed_since_spawn_ms=elapsed_ms,
+                        confidence=res.get("confidence", 0.0),
+                        latency_ms=res.get("latency_ms", elapsed_ms),
+                        heuristic_fallback=compact_candidate(candidates[0]),
+                        jev_choice=compact_candidate(jev_move),
+                        jev_overrode_heuristic=(jev_move["id"] != candidates[0]["id"]),
+                        grid_at_apply={"x": grid_x, "y": grid_y, "rot": grid_rot},
+                    )
 
                     terrain, goal = terrain_summary(summary)
                     inspector_data = {
@@ -257,6 +312,17 @@ def main():
 
                 elif res.get("success"):
                     decision_finalized = True
+                    telemetry.count("jev_late")
+                    telemetry.event(
+                        "decision_late",
+                        piece_serial=piece_serial,
+                        elapsed_since_spawn_ms=elapsed_ms,
+                        deadline_ms=JEV_DECISION_DEADLINE_MS,
+                        latency_ms=res.get("latency_ms", elapsed_ms),
+                        ignored_choice_id=res.get("choice_id"),
+                        active_target=compact_candidate(chosen_move_data),
+                        grid={"x": grid_x, "y": grid_y, "rot": grid_rot},
+                    )
                     api_status_text = (
                         f"JEV 늦음: {elapsed_ms}ms > "
                         f"{JEV_DECISION_DEADLINE_MS}ms → 휴리스틱 유지"
@@ -268,6 +334,15 @@ def main():
 
                 else:
                     decision_finalized = True
+                    telemetry.count("jev_errors")
+                    telemetry.event(
+                        "decision_error",
+                        piece_serial=piece_serial,
+                        elapsed_since_spawn_ms=elapsed_ms,
+                        latency_ms=res.get("latency_ms", 0),
+                        error=res.get("error_msg", "unknown"),
+                        active_target=compact_candidate(chosen_move_data),
+                    )
                     api_status_text = f"JEV 오류 → 휴리스틱: {res.get('error_msg', 'unknown')}"
                     api_status_color = (255, 100, 100)
                     inspector_data["decision_source"] = "HEURISTIC/ERROR"
@@ -276,6 +351,14 @@ def main():
 
             else:
                 # 이전 블록이 이미 끝난 뒤 도착한 응답은 절대 다음 블록에 적용하지 않는다.
+                telemetry.event(
+                    "stale_jev_response_discarded",
+                    response_piece_serial=result_serial,
+                    current_piece_serial=piece_serial,
+                    game_state=state,
+                    latency_ms=response_latency,
+                    choice_id=res.get("choice_id"),
+                )
                 api_status_text = "이전 블록의 늦은 JEV 응답 폐기"
                 api_status_color = (180, 180, 200)
 
@@ -311,6 +394,20 @@ def main():
                             "current_holes": game.count_holes(),
                         }
 
+                        telemetry.count("pieces_spawned")
+                        telemetry.event(
+                            "piece_spawn",
+                            piece_serial=piece_serial,
+                            piece=game.current_piece,
+                            next_piece=game.next_piece,
+                            randomizer=randomizer_mode,
+                            board_before=compact_board(game.board),
+                            column_heights=active_summary["column_heights"],
+                            holes=active_summary["current_holes"],
+                            heuristic_fallback=compact_candidate(chosen_move_data),
+                            candidates=[compact_candidate(c) for c in candidates],
+                        )
+
                         spawn_time = time.perf_counter()
                         decision_requested_for = -1
                         decision_applied = False
@@ -342,6 +439,15 @@ def main():
                 # JEV deadline은 현실 시간 기준이다. 게임 세계는 멈추지 않는다.
                 if not decision_finalized and elapsed_ms >= JEV_DECISION_DEADLINE_MS:
                     decision_finalized = True
+                    telemetry.count("deadline_fallbacks")
+                    telemetry.event(
+                        "decision_deadline",
+                        piece_serial=piece_serial,
+                        elapsed_since_spawn_ms=elapsed_ms,
+                        deadline_ms=JEV_DECISION_DEADLINE_MS,
+                        fallback=compact_candidate(chosen_move_data),
+                        grid={"x": grid_x, "y": grid_y, "rot": grid_rot},
+                    )
                     api_status_text = (
                         f"deadline {JEV_DECISION_DEADLINE_MS}ms → 휴리스틱 확정"
                     )
@@ -358,6 +464,17 @@ def main():
                 ):
                     decision_requested_for = piece_serial
                     is_network_busy = True
+                    telemetry.count("jev_requests")
+                    telemetry.event(
+                        "jev_request",
+                        piece_serial=piece_serial,
+                        elapsed_since_spawn_ms=elapsed_ms,
+                        piece=game.current_piece,
+                        next_piece=game.next_piece,
+                        board_heights=active_summary["column_heights"],
+                        holes=active_summary["current_holes"],
+                        candidates=[compact_candidate(c) for c in active_candidates],
+                    )
                     api_status_text = f"'{game.current_piece}' 낙하 중 / JEV 연산 중..."
                     api_status_color = (255, 215, 0)
                     th = threading.Thread(
@@ -444,6 +561,9 @@ def main():
                         # 더는 내려갈 수 없는 실제 위치에서 고정한다.
                         # 목표 좌표로 순간이동/스냅하지 않는다.
                         actual_shape = SHAPES[game.current_piece][grid_rot]
+                        target_reached = (
+                            grid_x == target_col and grid_rot == target_rot
+                        )
                         clearing_rows = game.lock_blocks_to_board(
                             actual_shape,
                             grid_x,
@@ -454,6 +574,34 @@ def main():
                             (grid_x + cx, grid_y + cy)
                             for cx, cy in actual_shape
                         ]
+
+                        telemetry.count("landings")
+                        if not target_reached:
+                            telemetry.count("target_misses")
+                        telemetry.event(
+                            "piece_landed",
+                            piece_serial=piece_serial,
+                            piece=game.current_piece,
+                            elapsed_since_spawn_ms=int(
+                                (time.perf_counter() - spawn_time) * 1000
+                            ),
+                            decision_source=inspector_data["decision_source"],
+                            decision_applied=decision_applied,
+                            target=compact_candidate(chosen_move_data),
+                            actual={
+                                "col": grid_x,
+                                "row": grid_y,
+                                "rot": grid_rot,
+                                "rot_label": ORIENTATION_LABELS[
+                                    game.current_piece
+                                ].get(grid_rot, f"Rot{grid_rot}"),
+                            },
+                            target_reached=target_reached,
+                            rows_ready_to_clear=list(clearing_rows),
+                            holes_after_lock=game.count_holes(),
+                            heights_after_lock=game.get_column_heights(),
+                            board_after_lock=compact_board(game.board),
+                        )
 
                         if grid_x != target_col or grid_rot != target_rot:
                             inspector_data["decision_narrative"] += (
@@ -482,10 +630,39 @@ def main():
             elif state == "LINE_FLASH":
                 line_flash_timer -= 1
                 if line_flash_timer <= 0:
+                    cleared_now = len(clearing_rows)
+                    cleared_rows_snapshot = list(clearing_rows)
                     game.clear_full_lines(clearing_rows)
+                    telemetry.count("line_clear_events")
+                    telemetry.count("lines_cleared", cleared_now)
+                    telemetry.event(
+                        "lines_cleared",
+                        piece_serial=piece_serial,
+                        count=cleared_now,
+                        rows=cleared_rows_snapshot,
+                        total_lines=game.lines_cleared_total,
+                        score=game.score,
+                        holes_after_clear=game.count_holes(),
+                        heights_after_clear=game.get_column_heights(),
+                        board_after_clear=compact_board(game.board),
+                    )
                     clearing_rows = []
                     game.advance_piece()
                     state = "SPAWN"
+
+        if game.game_over and not game_over_logged:
+            game_over_logged = True
+            telemetry.count("game_overs")
+            telemetry.event(
+                "game_over",
+                piece_serial=piece_serial,
+                score=game.score,
+                total_lines=game.lines_cleared_total,
+                holes=game.count_holes(),
+                heights=game.get_column_heights(),
+                randomizer=randomizer_mode,
+                board=compact_board(game.board),
+            )
 
         # ----------------- 렌더링 -----------------
         screen.fill((16, 18, 23))
@@ -787,6 +964,19 @@ def main():
             )
 
         pygame.display.flip()
+
+    telemetry.close(
+        final_state={
+            "score": game.score,
+            "total_lines": game.lines_cleared_total,
+            "holes": game.count_holes(),
+            "heights": game.get_column_heights(),
+            "randomizer": randomizer_mode,
+            "board": compact_board(game.board),
+        }
+    )
+    print(f"[telemetry] saved: {telemetry.log_path}")
+    print(f"[telemetry] summary: {telemetry.summary_path}")
 
     pygame.quit()
     sys.exit()
