@@ -49,6 +49,29 @@ Inspector의 통신 시간은 API 요청부터 응답까지의 end-to-end latenc
 기본 deadline은 1600ms이며 `JEV_DECISION_DEADLINE_MS` 환경변수로 변경할 수 있습니다.
 deadline을 초과한 응답은 현재 블록의 행동을 변경하지 않습니다.
 
+## 실험 로그
+
+실행할 때마다 `logs/` 폴더에 두 파일이 자동 생성됩니다.
+
+- `jev_tetris_YYYYMMDD_HHMMSS_PID.jsonl`: 블록 단위 상세 이벤트 로그
+- `jev_tetris_YYYYMMDD_HHMMSS_PID_summary.json`: 세션 요약 통계
+
+JSONL에는 다음 사건이 기록됩니다.
+
+- 블록 spawn 당시 보드/높이/구멍/다음 블록
+- 상위 후보 5개의 Dellacherie 계열 feature와 휴리스틱 점수
+- JEV 요청/응답 시간, choice, confidence
+- JEV가 휴리스틱 1위를 바꿨는지
+- deadline 초과/오류/이전 블록 응답 폐기
+- 실제 착지 위치와 목표 도달 여부
+- line clear 이후 보드 상태
+- game over 직전 최종 보드
+
+API Key나 Authorization header는 기록하지 않습니다.
+
+실험 후 피드백할 때 가장 최근의 `.jsonl`과 `_summary.json` 두 파일을 함께 주면,
+화면 관찰만으로는 알 수 없는 실패 원인까지 piece 단위로 재구성할 수 있습니다.
+
 ## 테스트
 
     python -m unittest -v
