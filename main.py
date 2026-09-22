@@ -286,7 +286,11 @@ def main():
             if state == "FALLING" and result_serial == piece_serial:
                 elapsed_ms = int((time.perf_counter() - spawn_time) * 1000)
 
-                if res.get("success") and elapsed_ms <= JEV_DECISION_DEADLINE_MS:
+                if (
+                    res.get("success")
+                    and elapsed_ms <= JEV_DECISION_DEADLINE_MS
+                    and not decision_finalized
+                ):
                     best_id = res["choice_id"]
                     jev_move = next(
                         (c for c in candidates if c["id"] == best_id),
@@ -343,7 +347,8 @@ def main():
                     decision_applied = (decision_source == "JEV")
                     decision_finalized = True
 
-                    telemetry.count("jev_applied")
+                    if decision_source == "JEV":
+                        telemetry.count("jev_applied")
                     telemetry.event(
                         "decision_applied",
                         piece_serial=piece_serial,
@@ -382,6 +387,7 @@ def main():
                     api_status_color = (100, 255, 120)
 
                 elif res.get("success"):
+                    was_already_finalized = decision_finalized
                     decision_finalized = True
                     telemetry.count("jev_late")
                     telemetry.event(
@@ -391,6 +397,7 @@ def main():
                         deadline_ms=JEV_DECISION_DEADLINE_MS,
                         latency_ms=res.get("latency_ms", elapsed_ms),
                         ignored_choice_id=res.get("choice_id"),
+                        already_control_committed=was_already_finalized,
                         active_target=compact_candidate(chosen_move_data),
                         grid={"x": grid_x, "y": grid_y, "rot": grid_rot},
                     )
