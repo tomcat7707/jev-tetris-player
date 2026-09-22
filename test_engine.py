@@ -58,7 +58,10 @@ class TetrisEngineTests(unittest.TestCase):
         }
         for candidate in candidates:
             self.assertTrue(required.issubset(candidate))
-            self.assertTrue(candidate["safety_filtered"])
+            self.assertFalse(candidate["safety_filtered"])
+            self.assertEqual(candidate["candidate_pool_mode"], "diverse_holistic")
+            self.assertIn("robust_score", candidate)
+            self.assertIn("next_option_count", candidate)
 
     def test_diverse_pool_keeps_tradeoff_choices_from_logged_failure(self):
         # v3 run piece 136 직전 보드.
