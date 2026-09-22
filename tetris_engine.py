@@ -1,4 +1,3 @@
-import copy
 import random
 
 SHAPES = {
@@ -23,7 +22,6 @@ SHAPES = {
           [(0, 0), (1, 0), (1, 1), (1, 2)]]
 }
 
-# JEV와 화면에 전달할 직관적인 회전 자세 명칭
 ORIENTATION_LABELS = {
     'T': {0: 'ㅜ(바닥평탄)', 1: 'ㅏ(세로우측)', 2: 'ㅗ(홈메우기)', 3: 'ㅓ(세로좌측)'},
     'I': {0: 'ㅡ(가로안착)', 1: 'ㅣ(세로꽂기)'},
@@ -44,27 +42,53 @@ PIECE_COLORS = {
     'L': (240, 140, 0)
 }
 
+
 class TetrisGame:
-    def __init__(self, width=10, height=20):
+    def __init__(self, width=10, height=20, randomizer_mode="7bag", seed=None):
         self.width = width
         self.height = height
         self.board = [[None for _ in range(width)] for _ in range(height)]
         self.score = 0
         self.lines_cleared_total = 0
         self.game_over = False
+
+        self.randomizer_mode = randomizer_mode if randomizer_mode in {"7bag", "iid"} else "7bag"
+        self.rng = random.Random(seed)
         self.bag = []
+
         self.current_piece = self._draw_piece()
         self.next_piece = self._draw_piece()
 
     def _draw_piece(self):
+        pieces = list(SHAPES.keys())
+
+        if self.randomizer_mode == "iid":
+            return self.rng.choice(pieces)
+
         if not self.bag:
-            self.bag = list(SHAPES.keys())
-            random.shuffle(self.bag)
+            self.bag = pieces[:]
+            self.rng.shuffle(self.bag)
         return self.bag.pop()
 
     def advance_piece(self):
         self.current_piece = self.next_piece
         self.next_piece = self._draw_piece()
+
+    def can_place(self, piece_name, rot_idx, col, row, board=None):
+        """현재 보드에서 실제 이동/회전/낙하가 가능한지 검사한다."""
+        target = board or self.board
+        shape = SHAPES[piece_name][rot_idx % len(SHAPES[piece_name])]
+
+        for x, y in shape:
+            nx = col + x
+            ny = row + y
+
+            if nx < 0 or nx >= self.width or ny >= self.height:
+                return False
+            if ny >= 0 and target[ny][nx] is not None:
+                return False
+
+        return True
 
     def get_column_heights(self, board=None):
         target = board or self.board
@@ -80,7 +104,7 @@ class TetrisGame:
 
     def evaluate_board_metrics(self, board):
         heights = self.get_column_heights(board)
-        
+
         holes = 0
         for c in range(self.width):
             block_found = False
@@ -103,8 +127,8 @@ class TetrisGame:
 
         cumulative_wells = 0
         for c in range(self.width):
-            left_h = 20 if c == 0 else heights[c - 1]
-            right_h = 20 if c == self.width - 1 else heights[c + 1]
+            left_h = self.height if c == 0 else heights[c - 1]
+            right_h = self.height if c == self.width - 1 else heights[c + 1]
             min_adj = min(left_h, right_h)
             if min_adj > heights[c]:
                 depth = min_adj - heights[c]
@@ -119,25 +143,16 @@ class TetrisGame:
     def simulate_drop(self, piece_name, rot_idx, col_offset):
         rotations = SHAPES[piece_name]
         shape = rotations[rot_idx % len(rotations)]
-        
+
         min_x = min(x for x, y in shape)
         max_x = max(x for x, y in shape)
         if col_offset + min_x < 0 or col_offset + max_x >= self.width:
             return None
 
         drop_y = 0
-        while True:
-            valid = True
-            for x, y in shape:
-                nx = col_offset + x
-                ny = drop_y + y
-                if ny >= self.height or (ny >= 0 and self.board[ny][nx] is not None):
-                    valid = False
-                    break
-            if not valid:
-                drop_y -= 1
-                break
+        while self.can_place(piece_name, rot_idx, col_offset, drop_y):
             drop_y += 1
+        drop_y -= 1
 
         if drop_y < 0:
             return None
@@ -145,7 +160,6 @@ class TetrisGame:
         min_y = min(drop_y + y for x, y in shape)
         landing_height = self.height - min_y
 
-        # [핵심] 바닥 밀착도(Contact Edges) 및 공중 걸침(Overhangs) 계산
         shape_set = set(shape)
         contact_edges = 0
         overhangs = 0
@@ -154,14 +168,11 @@ class TetrisGame:
             bx = col_offset + cx
             by = drop_y + cy
 
-            # 1. 아래쪽 바닥 밀착 여부
             if by + 1 >= self.height or self.board[by + 1][bx] is not None:
                 contact_edges += 1
             elif (cx, cy + 1) not in shape_set:
-                # 자기 블록도 아니고 바닥도 아닌 허공에 붕 뜸 (모서리 걸침 현상)
                 overhangs += 1
 
-            # 2. 좌우 벽 및 인접 블록 밀착 여부
             if bx - 1 < 0 or (by < self.height and self.board[by][bx - 1] is not None):
                 contact_edges += 1
             if bx + 1 >= self.width or (by < self.height and self.board[by][bx + 1] is not None):
@@ -192,8 +203,8 @@ class TetrisGame:
             "shape": shape,
             "drop_y": drop_y,
             "landing_height": landing_height,
-            "contact_edges": contact_edges,   # 퍼즐 맞물림 밀착도
-            "overhangs": overhangs,           # 허공 걸침 수치
+            "contact_edges": contact_edges,
+            "overhangs": overhangs,
             "delta_holes": holes - curr_holes,
             "total_holes_after": holes,
             "col_transitions": col_trans,
@@ -219,7 +230,6 @@ class TetrisGame:
         surviving_moves = [m for m in raw_candidates if m["landing_height"] < 19]
         valid_pool = surviving_moves if surviving_moves else raw_candidates
 
-        # 퍼즐 밀착도(+Contact) 및 공중 걸침 억제(-Overhang)가 결합된 랭킹
         def score_move(m):
             score = (
                 - 4.5 * m["landing_height"]
@@ -227,8 +237,8 @@ class TetrisGame:
                 - 8.0 * m["total_holes_after"]
                 - 3.2 * m["cumulative_wells"]
                 - 3.8 * m["col_transitions"]
-                + 2.5 * m["contact_edges"]   # 빈틈없이 맞물릴수록 큰 가산점!
-                - 6.0 * m["overhangs"]       # 모서리에 걸쳐서 밑에 빈 공간 만들면 강력 감점!
+                + 2.5 * m["contact_edges"]
+                - 6.0 * m["overhangs"]
             )
             if m["landing_height"] <= 8:
                 score += 15.0
