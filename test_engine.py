@@ -33,10 +33,15 @@ class TetrisEngineTests(unittest.TestCase):
         candidates = game.generate_candidate_moves(game.current_piece)
         self.assertGreaterEqual(len(candidates), 1)
         self.assertLessEqual(len(candidates), 5)
+        scores = []
         for candidate in candidates:
             self.assertIn("id", candidate)
             self.assertIn("drop_y", candidate)
             self.assertIn("contact_edges", candidate)
+            self.assertIn("heuristic_score", candidate)
+            scores.append(candidate["heuristic_score"])
+
+        self.assertEqual(scores, sorted(scores, reverse=True))
 
 
 if __name__ == "__main__":
