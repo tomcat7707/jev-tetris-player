@@ -36,6 +36,36 @@ JEV의 판단 지연을 실제 게임 시간 안에서 검증하기 위한 테�
 > 아니면 deterministic safety envelope 안에서만 판단하게 하는 것이  
 > 장기 생존성과 실제 제어 가능성을 높이는가?
 
+## v4: Diverse Candidate Pool 실험
+
+v3 selective run에서 새로운 실패 모드가 확인되었습니다.
+
+- 161개 블록 / 51줄에서 game over
+- JEV 79회 호출, 79회 skip
+- 후반 31개 블록 중 18개는 후보가 단 1개뿐
+- piece 135~136의 연속 S에서 hard hole-filter가 후보를 각각 1개로 축소
+- hole=0을 고집하는 동안 높이가 7 → 9로 상승하고, 이후 깊은 1열 canyon이 고착
+
+따라서 v4는 **hole을 만들지 않는 후보만 남기는 hard Safety Envelope를 제거**합니다.
+
+대신:
+
+- 모든 합법 straight-drop 후보를 유지
+- corrected Dellacherie + 2-ply score를 사용
+- `max_well_depth`, `max_cliff`, `next_option_count`, `next_nonworsening_count` 추가
+- hole 증가는 강하게 벌점하되 후보 자체를 삭제하지 않음
+- holistic 상위 후보 + 최소 holes / 최소 well / 최소 height / 최대 future-options 후보를 섞는 diverse pool 구성
+- JEV prompt도 “zero-hole 절대주의” 대신 장기 복구 가능성과 future flexibility를 평가하도록 수정
+
+이번 버전의 핵심 질문:
+
+> 당장 깨끗해 보이는 상태 하나만 강제하는 것보다,
+> 약간의 단기 비용을 허용하면서 여러 미래 선택지를 보존하는 것이
+> IID 환경에서 더 오래 살아남는가?
+
+v4 첫 비교 실험은 `JEV_POLICY=always`로 실행하는 것을 권장합니다.
+candidate pool 안정성을 먼저 검증한 뒤 selective gate를 다시 비교합니다.
+
 ## v3: Selective JEV 실험
 
 v2 장기 run에서 시스템이 안정 상태에 들어가면서, JEV를 모든 블록에 호출할 필요가 있는지 검증하기 위한 버전입니다.

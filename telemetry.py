@@ -34,7 +34,9 @@ def compact_candidate(move):
         "row_transitions",
         "col_transitions",
         "cumulative_wells",
+        "max_well_depth",
         "bumpiness",
+        "max_cliff",
         "lines_cleared",
         "eroded_piece_cells",
         "max_height",
@@ -42,8 +44,13 @@ def compact_candidate(move):
         "next_best_score",
         "next_best_holes",
         "next_best_max_height",
+        "next_best_max_well_depth",
         "next_best_id",
+        "next_option_count",
+        "next_nonworsening_count",
         "two_ply_score",
+        "robust_score",
+        "candidate_pool_mode",
         "safety_filtered",
     )
     return {key: move.get(key) for key in keys}
