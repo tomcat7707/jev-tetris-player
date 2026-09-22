@@ -2,13 +2,21 @@ import time
 import requests
 from config import TYPESAFE_API_KEY, TYPESAFE_API_URL
 
+
 class JevTetrisAgent:
     def __init__(self, api_key=None):
         self.api_key = api_key or TYPESAFE_API_KEY
         self.endpoint = TYPESAFE_API_URL
 
+        # HTTP keep-alive로 매 블록마다 TCP/TLS 연결을 새로 맺는 비용을 줄인다.
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        })
+
     def evaluate_best_move(self, board_summary, candidate_moves):
-        start_t = time.time()
+        start_t = time.perf_counter()
 
         if not self.api_key:
             return {"success": False, "error_msg": "API Key Missing", "sent_payload": {}}
@@ -70,15 +78,10 @@ class JevTetrisAgent:
             }
         }
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-
         try:
-            response = requests.post(self.endpoint, headers=headers, json=payload, timeout=6.0)
-            latency = int((time.time() - start_t) * 1000)
-            
+            response = self.session.post(self.endpoint, json=payload, timeout=6.0)
+            latency = int((time.perf_counter() - start_t) * 1000)
+
             if response.status_code == 200:
                 res_json = response.json()
                 answer = res_json["answers"]["best_placement"]
@@ -91,10 +94,27 @@ class JevTetrisAgent:
                     "strategy_summary": strategy_prompt,
                     "error_msg": None
                 }
-            else:
-                return {"success": False, "error_msg": f"HTTP {response.status_code}", "sent_payload": payload["state"]}
+
+            return {
+                "success": False,
+                "error_msg": f"HTTP {response.status_code}",
+                "latency_ms": latency,
+                "sent_payload": payload["state"]
+            }
 
         except requests.exceptions.Timeout:
-            return {"success": False, "error_msg": "Timeout (6s)", "sent_payload": payload["state"]}
+            latency = int((time.perf_counter() - start_t) * 1000)
+            return {
+                "success": False,
+                "error_msg": "Timeout (6s)",
+                "latency_ms": latency,
+                "sent_payload": payload["state"]
+            }
         except Exception as e:
-            return {"success": False, "error_msg": str(e), "sent_payload": payload["state"]}
+            latency = int((time.perf_counter() - start_t) * 1000)
+            return {
+                "success": False,
+                "error_msg": str(e),
+                "latency_ms": latency,
+                "sent_payload": payload["state"]
+            }
