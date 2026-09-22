@@ -227,17 +227,39 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     auto_play = not auto_play
+                    telemetry.event(
+                        "autoplay_toggled",
+                        enabled=auto_play,
+                        piece_serial=piece_serial,
+                        game_state=state,
+                    )
                 elif event.key == pygame.K_r:
                     reset_game()
                 elif event.key == pygame.K_m:
                     randomizer_mode = "7bag" if randomizer_mode == "iid" else "iid"
                     reset_game(randomizer_mode)
+                    telemetry.event(
+                        "randomizer_changed",
+                        randomizer=randomizer_mode,
+                    )
                     api_status_text = f"랜덤 모드 변경: {randomizer_mode.upper()}"
                     api_status_color = (120, 210, 255)
                 elif event.key == pygame.K_UP:
+                    previous_speed = gravity_speed
                     gravity_speed = max(4, gravity_speed - 2)
+                    telemetry.event(
+                        "gravity_changed",
+                        from_frames=previous_speed,
+                        to_frames=gravity_speed,
+                    )
                 elif event.key == pygame.K_DOWN:
+                    previous_speed = gravity_speed
                     gravity_speed = min(30, gravity_speed + 2)
+                    telemetry.event(
+                        "gravity_changed",
+                        from_frames=previous_speed,
+                        to_frames=gravity_speed,
+                    )
 
         # ----------------- 완료된 JEV 응답 수신 -----------------
         if thread_result is not None:
