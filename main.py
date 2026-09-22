@@ -675,16 +675,24 @@ def main():
         if game.game_over and not game_over_logged:
             game_over_logged = True
             telemetry.count("game_overs")
+            final_state = {
+                "score": game.score,
+                "total_lines": game.lines_cleared_total,
+                "holes": game.count_holes(),
+                "heights": game.get_column_heights(),
+                "randomizer": randomizer_mode,
+                "board": compact_board(game.board),
+            }
             telemetry.event(
                 "game_over",
                 piece_serial=piece_serial,
-                score=game.score,
-                total_lines=game.lines_cleared_total,
-                holes=game.count_holes(),
-                heights=game.get_column_heights(),
-                randomizer=randomizer_mode,
-                board=compact_board(game.board),
+                **final_state,
             )
+            telemetry.write_summary(
+                final_state=final_state,
+                checkpoint_reason="game_over",
+            )
+            print(f"[telemetry] game-over summary: {telemetry.summary_path}")
 
         # ----------------- 렌더링 -----------------
         screen.fill((16, 18, 23))
