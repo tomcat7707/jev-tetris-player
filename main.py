@@ -469,7 +469,7 @@ def main():
                         game.game_over = True
                     else:
                         # JEV가 늦거나 실패할 때 사용할 deterministic fallback.
-                        # v2는 safety envelope + 2-ply lookahead 순으로 정렬되어 있다.
+                        # v4는 diverse holistic pool + 2-ply lookahead 순으로 정렬되어 있다.
                         active_candidates = candidates
                         chosen_move_data = candidates[0]
                         target_col = chosen_move_data["col"]
@@ -492,6 +492,11 @@ def main():
                             board_before=compact_board(game.board),
                             column_heights=active_summary["column_heights"],
                             holes=active_summary["current_holes"],
+                            candidate_diagnostics=getattr(
+                                game,
+                                "last_candidate_diagnostics",
+                                {},
+                            ),
                             heuristic_fallback=compact_candidate(chosen_move_data),
                             candidates=[compact_candidate(c) for c in candidates],
                         )
