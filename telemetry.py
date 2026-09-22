@@ -145,15 +145,28 @@ class ExperimentLogger:
         }
         return result
 
-    def close(self, final_state=None):
+    def write_summary(self, final_state=None, checkpoint_reason=None):
+        """게임 종료/체크포인트 시점에도 summary 파일을 즉시 갱신한다."""
         if self._closed:
-            return
+            return None
 
         summary = self.summary(final_state)
-        self.event("session_end", summary=summary)
+        if checkpoint_reason:
+            summary["checkpoint_reason"] = checkpoint_reason
 
         with self._lock:
             with open(self.summary_path, "w", encoding="utf-8") as f:
                 json.dump(summary, f, ensure_ascii=False, indent=2)
 
+        return summary
+
+    def close(self, final_state=None):
+        if self._closed:
+            return
+
+        summary = self.write_summary(
+            final_state,
+            checkpoint_reason="session_closed",
+        )
+        self.event("session_end", summary=summary)
         self._closed = True
