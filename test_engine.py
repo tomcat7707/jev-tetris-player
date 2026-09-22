@@ -192,6 +192,53 @@ class TetrisEngineTests(unittest.TestCase):
         self.assertTrue(call)
         self.assertEqual(info["reason"], "recovery_holes")
 
+
+    def test_selective_gate_uses_robust_score_and_future_flexibility(self):
+        summary = {
+            "column_heights": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+            "current_holes": 0,
+        }
+        # two_ply는 멀리 떨어져 있어도 robust_score가 가까우면 ambiguous.
+        candidates = [
+            {
+                "id": "a",
+                "robust_score": -100.0,
+                "two_ply_score": -100.0,
+                "next_nonworsening_count": 5,
+                "max_well_depth": 1,
+            },
+            {
+                "id": "b",
+                "robust_score": -106.0,
+                "two_ply_score": -140.0,
+                "next_nonworsening_count": 5,
+                "max_well_depth": 1,
+            },
+        ]
+        call, info = should_call_jev(
+            "ambiguous",
+            summary,
+            candidates,
+            ambiguity_gap=10.0,
+            high_stack_trigger=8,
+        )
+        self.assertTrue(call)
+        self.assertEqual(info["reason"], "ambiguous_gap")
+        self.assertEqual(info["robust_gap"], 6.0)
+
+        candidates[0]["next_nonworsening_count"] = 1
+        candidates[1]["robust_score"] = -130.0
+        call, info = should_call_jev(
+            "ambiguous",
+            summary,
+            candidates,
+            ambiguity_gap=10.0,
+            high_stack_trigger=8,
+            low_flex_trigger=2,
+        )
+        self.assertTrue(call)
+        self.assertEqual(info["reason"], "low_future_flexibility")
+
     def test_path_planner_finds_collision_aware_route(self):
         game = TetrisGame(randomizer_mode="iid", seed=1)
         path = find_control_path(

@@ -43,3 +43,8 @@ JEV_AMBIGUITY_GAP = float(os.getenv("JEV_AMBIGUITY_GAP", "10.0"))
 
 # 이 높이 이상에서는 score gap과 무관하게 JEV를 호출해 위험상태를 재검토
 JEV_HIGH_STACK_TRIGGER = int(os.getenv("JEV_HIGH_STACK_TRIGGER", "8"))
+
+
+# v4 selective gate risk triggers
+JEV_LOW_FLEX_TRIGGER = int(os.getenv("JEV_LOW_FLEX_TRIGGER", "2"))
+JEV_DEEP_WELL_TRIGGER = int(os.getenv("JEV_DEEP_WELL_TRIGGER", "4"))

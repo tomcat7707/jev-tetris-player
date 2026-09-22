@@ -17,6 +17,8 @@ from config import (
     JEV_POLICY,
     JEV_AMBIGUITY_GAP,
     JEV_HIGH_STACK_TRIGGER,
+    JEV_LOW_FLEX_TRIGGER,
+    JEV_DEEP_WELL_TRIGGER,
 )
 from tetris_engine import TetrisGame, PIECE_COLORS, SHAPES, ORIENTATION_LABELS
 from jev_agent import JevTetrisAgent
@@ -114,6 +116,8 @@ def main():
             "jev_policy": JEV_POLICY,
             "jev_ambiguity_gap": JEV_AMBIGUITY_GAP,
             "jev_high_stack_trigger": JEV_HIGH_STACK_TRIGGER,
+            "jev_low_flex_trigger": JEV_LOW_FLEX_TRIGGER,
+            "jev_deep_well_trigger": JEV_DEEP_WELL_TRIGGER,
             "board_width": BOARD_WIDTH,
             "board_height": BOARD_HEIGHT,
         }
@@ -512,6 +516,8 @@ def main():
                             active_candidates,
                             JEV_AMBIGUITY_GAP,
                             JEV_HIGH_STACK_TRIGGER,
+                            JEV_LOW_FLEX_TRIGGER,
+                            JEV_DEEP_WELL_TRIGGER,
                         )
                         if not jev_call:
                             decision_finalized = True
